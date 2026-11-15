@@ -9,7 +9,7 @@ Command:
 ```bash
 MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest -q
 ```
-Latest result: **63 passed, 0 failed, 0 skipped** (~80 s, plus ~3 min the first time while the fixture template
+Latest result: **68 passed, 0 failed, 0 skipped** (~80 s, plus ~3 min the first time while the fixture template
 builds).
 
 | File | Scope |
@@ -19,6 +19,7 @@ builds).
 | `test_pos.py` | exact VAT/COGS ledger effects, idempotency, scale labels, fractional-unit rejection, oversell, **two-thread last-unit race**, override single-use, refund approval and duplicate protection, variance → over/short, unverified mobile money |
 | `test_workflows.py` | 100 → 95 transfer conservation + write-off to shrinkage, approval bands & ordering, distinct approvers, full procurement → payment, reject/return/resubmit, accrual expense, default-deny policy |
 | `test_finance.py` | trial balance, branch ⇄ consolidated reconciliation, independent SQL check, profit definitions, break-even formula, capital recovery honesty, branch-scoped P&L, audited exports, role-specific dashboards, insight evidence |
+| `test_open_demo.py` | open demo off by default (404), role-limited audited demo sessions, pending accounts excluded, cannot enable without TEST DATA mode |
 | `test_offline.py` | 35 offline sales on 2 tills, restart durability, central price change during outage, exactly-once sync, duplicate resend, stock reconciliation, attribution, edge last-unit race, suspended user losing offline access, outbox immutability, device revocation |
 
 ## Defects found by testing and fixed during development
@@ -29,6 +30,7 @@ builds).
 - Prices could not be changed through the API (missing company context). Fixed with a default company context.
 - Tryton tables were created in a schema named after the DB role. Fixed by pinning `search_path`.
 - POS refunds failed (register return location unset). Fixed in base setup.
+- TEST DATA showed an overdrawn bank (takings never banked). Added the bank-deposit operation and weekly seeded deposits; expenses rescaled to the simulated sales volume.
 - Per-sale lock-escalation restarts made checkout take about 1.3 s. Fixed with learned locks; about 0.65 s on the
   dev box.
 
@@ -36,8 +38,17 @@ builds).
 Trial balance balanced; 0 unbalanced entries; 0 entries without a branch; branch P&L reconciles for month, last 30
 days and FYTD; 0 journal entries from internal transfers; 0 negative stock lines.
 
+## Browser E2E (Playwright, Chromium, local server on seeded dev DB)
+Command: `cd web && E2E_CREDS=<creds.json> npx playwright test -c e2e/playwright.config.ts`. Result: **9 passed**:
+- the six role dashboards render live data with no page errors (screenshots taken at desktop size, plus mobile
+  for the Head Manager and Branch Manager);
+- every navigation route renders for the Head Manager;
+- a cashier completes a sale and gets a numbered receipt;
+- a cashier is blocked from back-office pages.
+
+Screenshot review found grey charts (chart colour tokens weren't emitted by Tailwind). Fixed with `@theme static`.
+
 ## Not yet executed
-- Browser end-to-end (Playwright) runs and screenshots: harness installed, runs pending.
 - Load test for 10 users / 4 cashiers on Render. Locally, a concurrent two-cashier race is tested. Throughput on
   Render's Starter plan has not been measured.
 - Physical-hardware tests (printers, scanners, drawers, UPS).

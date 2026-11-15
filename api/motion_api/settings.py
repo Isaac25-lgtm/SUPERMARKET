@@ -84,6 +84,7 @@ class Settings:
     login_max_failures: int
     login_lock_minutes: int
     offline_grant_hours: int
+    open_demo: bool = False
     allowed_hosts: list[str] = field(default_factory=list)
 
     @property
@@ -125,4 +126,7 @@ def get_settings() -> Settings:
         login_max_failures=int(os.environ.get("MOTION_LOGIN_MAX_FAILURES", "5")),
         login_lock_minutes=int(os.environ.get("MOTION_LOGIN_LOCK_MINUTES", "15")),
         offline_grant_hours=int(os.environ.get("MOTION_OFFLINE_GRANT_HOURS", "12")),
+        # Password-less "continue as" sign-in for TEST DATA demos only. Refused unless
+        # demo mode (TEST DATA banner) is also on, so it cannot guard real data.
+        open_demo=_bool("MOTION_OPEN_DEMO", False) and _bool("MOTION_DEMO_MODE", True),
     )

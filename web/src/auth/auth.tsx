@@ -9,7 +9,7 @@ export interface Me {
   all_branches: boolean; branch_ids: number[]; must_change_password: boolean
   branches: Branch[]; registers: Register[]
 }
-export interface Meta { brand: string; company: string; currency: string; timezone: string; test_data: boolean; ai_llm_enabled: boolean }
+export interface Meta { brand: string; company: string; currency: string; timezone: string; test_data: boolean; ai_llm_enabled: boolean; open_demo?: boolean }
 
 interface AuthState {
   me: Me | null

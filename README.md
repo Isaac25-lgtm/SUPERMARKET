@@ -16,7 +16,7 @@ offline-capable branch tills, and evidence-linked business insights.
 | **API** | Python 3.12 · FastAPI · Pydantic |
 | **Web** | React 19 · TypeScript (strict) · Vite · Tailwind CSS 4 · TanStack Query · Recharts |
 | **Offline** | Branch-edge service (FastAPI + SQLite/WAL) with an immutable outbox |
-| **Tests** | 63 backend integration tests on real PostgreSQL + Tryton (`pytest`) |
+| **Tests** | 68 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 9 browser E2E (Playwright) |
 
 ---
 
@@ -86,7 +86,8 @@ offline-capable branch tills, and evidence-linked business insights.
 **Finance**
 - Branch and **consolidated P&L**: net sales, COGS, gross profit, shrinkage, operating expenses, operating profit,
   and estimated net profit (before tax). The branch columns always reconcile to the consolidated total.
-- Cash position, payables, the journal with its source documents, and a trial balance.
+- Cash position, **bank deposits** (safe → bank, audited), payables, the journal with its source documents, and a
+  trial balance.
 - **Operating break-even**, using a blended contribution margin with the assumptions shown.
 - **Capital recovery**: payback measured from net *cash* generated, which is deliberately not accounting profit.
   It says "not enough data" rather than inventing a date.
@@ -224,6 +225,7 @@ Environment variables, set in the Render dashboard and **never in Git**:
 | `MOTION_AUTO_BOOTSTRAP=1` | Run migrations, Tryton module activation and base setup on start (idempotent) |
 | `MOTION_SEED_DEMO=1` / `MOTION_DEMO_MODE=1` | Generate TEST DATA in the background and show the TEST DATA banner. Set both to `0` for a real client. |
 | `MOTION_SEED_PASSWORD_SECRET` | Derives the UAT account passwords (see below) |
+| `MOTION_OPEN_DEMO=1` | **Open demo**: password-less "continue as" account picker. Only honoured when `MOTION_DEMO_MODE=1`. **Currently ON for the live TEST site.** |
 
 On start, the port binds immediately. Bootstrap runs in the background, and `/healthz` reports its phase. The app is
 usable once base setup finishes; the TEST DATA history keeps generating in the background and resumes per day if
@@ -232,6 +234,12 @@ the container restarts.
 ---
 
 ## Test accounts
+
+> **Open demo is currently ON** at the live URL: the sign-in page shows a "continue as" picker and no password is
+> needed. Each choice opens a real session for that test account, so role permissions, branch limits and the
+> audit trail still apply (sign-ins are audited as `auth.demo_login`). Anyone with the URL can use and change the
+> TEST data. Set `MOTION_OPEN_DEMO=0` on Render to require passwords again, and never enable it with real data:
+> the server refuses unless TEST DATA mode is also on.
 
 The seed creates one account per role, every one marked **TEST**:
 
@@ -267,9 +275,12 @@ a transfer with a 100 → 95 shortfall, a cash shortage, an interrupted shift, a
 ## Testing
 
 ```bash
-MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 63 integration tests
+MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 68 integration tests
 .venv/Scripts/ruff check api branch-edge tryton-modules
 (cd web && npx tsc -b --noEmit && npm run build)
+
+# Browser E2E against a running server (passwords via a local JSON file, never committed):
+(cd web && npx playwright install chromium && E2E_CREDS=/path/creds.json npx playwright test -c e2e/playwright.config.ts)
 ```
 
 The test harness builds a fixture database template once, cached by a code fingerprint, and clones a fresh
@@ -361,7 +372,7 @@ The full policy is in [docs/accounting-policy.md](docs/accounting-policy.md).
 
 ## Status
 
-**Working and tested** (63 integration tests; local end-to-end verified):
+**Working and tested** (68 integration tests + 9 browser E2E; deployed on Render):
 - POS, shifts and refunds
 - Stock, transfers, write-offs and counts
 - The procurement → payment chain, and expenses

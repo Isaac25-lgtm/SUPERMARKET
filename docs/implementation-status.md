@@ -11,6 +11,7 @@ Legend: ✅ working & covered by automated tests · ☑️ working, verified man
 | RBAC + branch scope on all endpoints | ✅ | matrix generated from code |
 | Append-only audit + approval history (DB triggers) | ✅ | owner DB role can still disable triggers → use a non-owner role in production |
 | MFA | ❌ | |
+| Open demo (password-less picker) | ✅ | `MOTION_OPEN_DEMO`, refused unless TEST DATA mode; ON for the live TEST site |
 
 ## Operations
 | Item | Status | Notes |
@@ -33,6 +34,7 @@ Legend: ✅ working & covered by automated tests · ☑️ working, verified man
 | Item | Status | Notes |
 |---|---|---|
 | Branch & consolidated P&L, cash, payables, journal, trial balance | ✅ | |
+| Bank deposits (safe → bank) | ✅ | API + seeded weekly deposits; no dedicated UI screen yet (API only) |
 | Break-even, capital recovery | ✅ | |
 | Period close UI, opening-balance / historical import | ❌ | Tryton supports period closing; no UI here |
 | Rule-based insights, ask-Motion (deterministic) | ✅ | |
@@ -47,5 +49,5 @@ Legend: ✅ working & covered by automated tests · ☑️ working, verified man
 | Physical hardware (printers, scanners, drawers, UPS, real multi-site LAN) | ❌ | not tested |
 
 ## Frontend
-All routes render real data from the API. Checks run: strict `tsc` and the production build. Browser E2E
-screenshots are listed in `docs/test-report.md` once captured. There are no unit tests for UI components yet.
+All routes render real data from the API. Checks run: strict `tsc`, the production build, and 9 Playwright E2E
+tests. There are no unit tests for UI components yet.

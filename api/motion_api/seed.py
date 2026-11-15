@@ -207,8 +207,13 @@ def seed_opening_stock() -> None:
 def seed_investment() -> None:
     owner = principal("hm.owner")
     t.execute("""INSERT INTO motion.investment (label, amount, invested_on, note, is_test_data, created_by)
-                 VALUES ('Initial chain fit-out & stock (TEST)', 380000000, %s, 'TEST DATA - illustrative capital outlay', true, %s)""",
+                 VALUES ('Initial chain fit-out & stock (TEST)', 45000000, %s, 'TEST DATA - illustrative capital outlay', true, %s)""",
               (common.today() - dt.timedelta(days=HISTORY_DAYS + 2), owner.user_id))
+
+
+def seed_investment_rescale() -> None:
+    """Earlier seeds used 380M; rescale the TEST investment to the simulated chain's size."""
+    t.execute("UPDATE motion.investment SET amount = 45000000 WHERE is_test_data AND amount = 380000000")
 
 
 def run(settings: Settings, activity: bool = True) -> None:
@@ -221,6 +226,7 @@ def run(settings: Settings, activity: bool = True) -> None:
     _phase("catalog", seed_catalog)
     _phase("opening_stock", seed_opening_stock)
     _phase("investment", seed_investment)
+    _phase("investment_v2", seed_investment_rescale)
     if not activity:  # fixtures for automated tests: no generated history
         return
     from . import seed_activity

@@ -13,7 +13,9 @@ from pydantic import BaseModel, Field
 from .. import tryton as t
 from ..audit import record
 from ..errors import Unauthenticated
-from ..security import (CSRF_COOKIE, SESSION_COOKIE, _LoginFailed, login, logout, record_login_failure)
+from ..errors import NotFound
+from ..security import (CSRF_COOKIE, SESSION_COOKIE, _LoginFailed, demo_accounts, demo_login, login, logout,
+                        record_login_failure)
 from ..services import approvals, common, users
 from ..settings import get_settings
 from ..web import MotionJSON, allow_pending_password, meta_of, unit_of_work
@@ -41,6 +43,28 @@ def auth_login(body: LoginIn, request: Request):
     except _LoginFailed as exc:
         record_login_failure(exc, meta)
         raise
+    resp = MotionJSON({"user": result.principal.as_public(), "csrf_token": result.csrf_token})
+    _set_session_cookies(resp, result.session_token, result.csrf_token, result.expires_at)
+    return resp
+
+
+class DemoLoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+@router.get("/auth/demo-accounts")
+def auth_demo_accounts():
+    if not get_settings().open_demo:
+        raise NotFound("Open demo is disabled.")
+    return MotionJSON({"accounts": t.run(demo_accounts, readonly=True)})
+
+
+@router.post("/auth/demo-login")
+def auth_demo_login(body: DemoLoginIn, request: Request):
+    if not get_settings().open_demo:
+        raise NotFound("Open demo is disabled.")
+    meta = meta_of(request)
+    result = t.run(lambda: demo_login(body.username, meta), user=0)
     resp = MotionJSON({"user": result.principal.as_public(), "csrf_token": result.csrf_token})
     _set_session_cookies(resp, result.session_token, result.csrf_token, result.expires_at)
     return resp
@@ -85,7 +109,8 @@ def meta(request: Request):
     """Public, non-sensitive configuration for the login screen."""
     s = get_settings()
     return MotionJSON({"brand": s.brand_name, "company": s.company_name, "currency": s.currency,
-                       "timezone": s.timezone, "test_data": s.demo_mode, "ai_llm_enabled": s.ai_llm_enabled})
+                       "timezone": s.timezone, "test_data": s.demo_mode, "ai_llm_enabled": s.ai_llm_enabled,
+                       "open_demo": s.open_demo})
 
 
 @router.get("/branches")

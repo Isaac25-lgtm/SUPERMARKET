@@ -401,6 +401,19 @@ def add_investment(body: InvestmentIn, request: Request):
     return MotionJSON(unit_of_work(request, fn), status_code=201)
 
 
+class DepositIn(BaseModel):
+    branch_id: int
+    amount: Decimal = Field(gt=0)
+    date: dt.date
+    reference: str = Field(min_length=3, max_length=60)
+
+
+@router.post("/finance/bank-deposits")
+def bank_deposit(body: DepositIn, request: Request):
+    return MotionJSON(unit_of_work(request, lambda p: finance.bank_deposit(
+        p, branch_id=body.branch_id, amount=body.amount, date=body.date, reference=body.reference)), status_code=201)
+
+
 @router.get("/finance/ledger")
 def ledger(request: Request, account_code: str | None = None, branch_id: int | None = None, days: int = 14):
     return MotionJSON({"lines": unit_of_work(request, lambda p: finance.ledger(

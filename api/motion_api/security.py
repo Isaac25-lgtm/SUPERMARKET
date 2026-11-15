@@ -198,6 +198,40 @@ def login(username: str, password: str, meta: RequestMeta) -> LoginResult:
     return LoginResult(principal, token, csrf, expires)
 
 
+def open_session(user_id: int, meta: RequestMeta, *, action: str) -> LoginResult:
+    settings = get_settings()
+    token = secrets.token_urlsafe(32)
+    csrf = secrets.token_urlsafe(24)
+    expires = utcnow() + timedelta(minutes=settings.session_ttl_minutes)
+    t.execute(
+        "INSERT INTO motion.session (id_hash, user_id, csrf_hash, expires_at, ip, user_agent) VALUES (%s,%s,%s,%s,%s,%s)",
+        (sha256(token), user_id, sha256(csrf), expires, meta.ip, (meta.user_agent or "")[:300]))
+    t.execute("UPDATE motion.app_user SET last_login_at=now() WHERE id=%s", (user_id,))
+    meta.session_ref = sha256(token)[:12]
+    principal = load_principal(user_id, session_hash=sha256(token), meta=meta)
+    record(actor=principal, action=action, target_type="user", target_id=user_id)
+    return LoginResult(principal, token, csrf, expires)
+
+
+def demo_accounts() -> list[dict]:
+    """Accounts offered by the open-demo picker (no secrets)."""
+    return t.sql("""
+        SELECT u.id, u.username, u.full_name, u.all_branches,
+               COALESCE((SELECT array_agg(role_code ORDER BY role_code) FROM motion.user_role r WHERE r.user_id=u.id), '{}') AS roles,
+               COALESCE((SELECT array_agg(b.code ORDER BY b.code) FROM motion.user_branch ub
+                         JOIN motion_branch b ON b.id = ub.branch_id WHERE ub.user_id=u.id), '{}') AS branches
+        FROM motion.app_user u WHERE u.status='active' AND NOT u.must_change_password ORDER BY u.id""")
+
+
+def demo_login(username: str, meta: RequestMeta) -> LoginResult:
+    if not get_settings().open_demo:
+        raise Forbidden("Open demo sign-in is disabled.", action="auth.demo_login.disabled")
+    row = t.sql_one("SELECT * FROM motion.app_user WHERE lower(username)=%s", ((username or "").strip().lower(),))
+    if not row or row["status"] != "active" or row["must_change_password"]:
+        raise Unauthenticated("That account is not available in the demo.")
+    return open_session(row["id"], meta, action="auth.demo_login")
+
+
 class _LoginFailed(Unauthenticated):
     def __init__(self, username: str, reason: str, user_id: int | None, message: str):
         super().__init__(message)
@@ -247,4 +281,5 @@ __all__ = [
     "Principal", "LoginResult", "SESSION_COOKIE", "CSRF_COOKIE", "authenticate_session", "check_csrf",
     "login", "logout", "hash_password", "verify_password", "validate_new_password", "revoke_user_sessions",
     "record_login_failure", "audit_denied", "load_principal", "utcnow", "sha256", "_LoginFailed",
+    "demo_login", "demo_accounts", "open_session",
 ]

@@ -1,12 +1,13 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
 import { Lock, ShieldCheck, Store, WifiOff } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { z } from 'zod'
 import { api } from '../api/client'
-import { useAuth } from '../auth/auth'
+import { ROLE_LABELS, primaryRole, useAuth } from '../auth/auth'
 import { Button, ErrorBox, Field, Input, TestDataBadge } from '../components/ui'
 
 const schema = z.object({
@@ -22,6 +23,7 @@ export function LoginPage() {
   const [error, setError] = useState<unknown>(null)
   const { register, handleSubmit, formState } = useForm<Form>({ resolver: zodResolver(schema) })
   if (me) return <Navigate to="/" replace />
+  if (meta?.open_demo) return <DemoPicker brand={meta.brand} />
   const onSubmit = handleSubmit(async (values) => {
     setError(null)
     try {
@@ -82,6 +84,53 @@ export function LoginPage() {
           </p>
         </div>
       </section>
+    </div>
+  )
+}
+
+interface DemoAccount { id: number; username: string; full_name: string; roles: string[]; branches: string[]; all_branches: boolean }
+
+function DemoPicker({ brand }: { brand: string }) {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
+  const q = useQuery({ queryKey: ['demo-accounts'], queryFn: () => api.get<{ accounts: DemoAccount[] }>('/api/auth/demo-accounts') })
+  const go = async (username: string) => {
+    setBusy(username); setError(null)
+    try {
+      await api.post('/api/auth/demo-login', { username })
+      await qc.invalidateQueries({ queryKey: ['me'] })
+      navigate('/', { replace: true })
+    } catch (e) { setError(e) } finally { setBusy(null) }
+  }
+  const order = ['owner', 'general_manager', 'accountant', 'operations_manager', 'inventory_manager', 'branch_manager', 'cashier', 'sysadmin']
+  const accounts = [...(q.data?.accounts ?? [])].sort((x, y) => order.indexOf(primaryRole(x.roles)) - order.indexOf(primaryRole(y.roles)))
+  return (
+    <div className="min-h-full px-6 py-10">
+      <div className="mx-auto max-w-5xl">
+        <div className="flex flex-wrap items-center gap-3">
+          <img src="/favicon.svg" alt="" className="size-10" />
+          <div><h1 className="text-[22px] font-semibold tracking-tight">{brand}</h1><p className="text-sm text-muted">Open demo — choose an account to explore. No password needed.</p></div>
+          <span className="ml-auto"><TestDataBadge /></span>
+        </div>
+        <div className="mt-5 rounded-xl border border-warn/30 bg-warn-soft px-4 py-3 text-[13px] text-warn">
+          This is a public demonstration with synthetic TEST DATA. Each account keeps its real permissions and branch limits, and every action is recorded in the audit trail.
+        </div>
+        <ErrorBox error={error ?? q.error} className="mt-4" />
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {accounts.map((a) => (
+            <button key={a.username} onClick={() => go(a.username)} disabled={!!busy}
+              className="group flex flex-col rounded-[var(--radius-card)] border border-line bg-surface p-4 text-left shadow-[var(--shadow-card)] transition hover:border-accent/60 hover:shadow-md disabled:opacity-60">
+              <span className="text-[12px] font-semibold uppercase tracking-wide text-accent">{ROLE_LABELS[primaryRole(a.roles)]}</span>
+              <span className="mt-1 text-[15px] font-semibold">{a.full_name.replace(/\s*\(TEST.*\)/, '')}</span>
+              <span className="mt-0.5 text-[12.5px] text-muted">{a.username} · {a.all_branches ? 'all branches' : a.branches.join(', ') || 'no branch'}</span>
+              <span className="mt-3 text-[13px] font-medium text-accent group-hover:underline">{busy === a.username ? 'Signing in…' : 'Continue as this user →'}</span>
+            </button>
+          ))}
+        </div>
+        {q.isLoading && <p className="mt-6 text-sm text-muted">Loading accounts…</p>}
+      </div>
     </div>
   )
 }

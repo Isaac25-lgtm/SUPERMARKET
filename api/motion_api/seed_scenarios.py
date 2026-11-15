@@ -128,7 +128,8 @@ def transfer_scenarios() -> None:
 
 def expense_scenarios() -> None:
     managers = {"CEN": "bm.joseph", "NTH": "bm.sarah", "STH": "bm.moses"}
-    amounts = {"CEN": (3500000, 4200000, 520000), "NTH": (2500000, 3100000, 410000), "STH": (1800000, 2300000, 300000)}
+    # Sized to the simulated sales volume (~15-17% of branch sales), so the TEST chain is modestly profitable.
+    amounts = {"CEN": (350000, 550000, 90000), "NTH": (250000, 400000, 70000), "STH": (150000, 280000, 60000)}
     acc = principal("acc.amina")
     today = common.today()
     months = [(today.replace(day=1) - dt.timedelta(days=1)).replace(day=1), today.replace(day=1)]
@@ -150,6 +151,22 @@ def expense_scenarios() -> None:
                     purchasing.record_payment(acc, pay["id"], paid_on=month + dt.timedelta(days=9))
 
 
+def banking_scenarios() -> None:
+    """Weekly banking of the takings dropped into each branch safe."""
+    from .services import finance
+    acc = principal("acc.amina")
+    for b in common.branches():
+        weeks = t.sql("""SELECT date_trunc('week', m.date)::date AS wk, sum(l.debit - l.credit) AS net
+                         FROM account_move_line l JOIN account_move m ON m.id=l.move JOIN account_account a ON a.id=l.account
+                         WHERE m.state='posted' AND a.code='1.1.1.02' AND m.branch=%s AND m.date < date_trunc('week', now())::date
+                         GROUP BY 1 ORDER BY 1""", (b["id"],))
+        for w in weeks:
+            amount = (D(w["net"]) * D("0.9")).quantize(D("1000"))
+            if amount > 0:
+                finance.bank_deposit(acc, branch_id=b["id"], amount=amount, date=w["wk"] + dt.timedelta(days=6),
+                                     reference=f"DEP-{b['code']}-{w['wk']:%y%m%d} (TEST)")
+
+
 def misc_scenarios() -> None:
     sarah = principal("bm.sarah")
     short = t.sql_one("SELECT id FROM motion.shift WHERE status='closed' AND variance < 0 ORDER BY id LIMIT 1")
@@ -161,7 +178,8 @@ def misc_scenarios() -> None:
 
 def scenarios() -> None:
     for name, fn in (("scenario_refund", refund_scenario), ("scenario_procurement", procurement_scenarios),
-                     ("scenario_transfers", transfer_scenarios), ("scenario_expenses", expense_scenarios),
+                     ("scenario_transfers", transfer_scenarios), ("scenario_banking", banking_scenarios),
+                     ("scenario_expenses", expense_scenarios),
                      ("scenario_misc", misc_scenarios)):
         if t.run(lambda n=name: _phase_done(n), readonly=True):
             continue

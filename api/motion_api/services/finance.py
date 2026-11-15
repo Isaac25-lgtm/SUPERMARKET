@@ -343,3 +343,37 @@ def trial_balance(actor: Principal) -> dict:
     d = sum((r["debit"] for r in rows), ZERO)
     c = sum((r["credit"] for r in rows), ZERO)
     return {"accounts": rows, "total_debit": d, "total_credit": c, "balanced": d == c}
+
+
+def bank_deposit(actor: Principal, *, branch_id: int, amount: Decimal, date: dt.date, reference: str) -> dict:
+    """Bank the takings held in the safe: Dr bank / Cr safe (branch-stamped journal entry)."""
+    from ..audit import record
+
+    actor.require("payment.record", action="finance.bank_deposit")
+    actor.require_branch(branch_id, action="finance.bank_deposit")
+    amount = common.money(amount)
+    if amount <= 0:
+        raise Invalid("Amount must be positive.")
+    if not reference or len(reference.strip()) < 3:
+        raise Invalid("Enter the bank slip reference.")
+    safe = t.sql_one("""SELECT COALESCE(sum(l.debit - l.credit), 0) AS b FROM account_move_line l JOIN account_move m ON m.id=l.move
+                        JOIN account_account a ON a.id=l.account WHERE m.state='posted' AND a.code='1.1.1.02' AND m.branch=%s""",
+                     (branch_id,))["b"]
+    if amount > safe:
+        raise Invalid(f"Only {common.money(safe)} is recorded in this branch's safe.")
+    Move = t.model("account.move")
+    Period = t.model("account.period")
+    cid = common.company_id()
+    with t.set_context(**common.tryton_context(branch_id)), t.transaction().set_user(actor.tryton_user_id or 0):
+        move, = Move.create([{
+            "company": cid, "journal": t.model("ir.model.data").get_id("account", "journal_cash"),
+            "period": Period.find(cid, date=date).id, "date": date, "branch": branch_id,
+            "description": f"Bank deposit {reference.strip()}",
+            "lines": [("create", [
+                {"account": common.account_by_code("1.1.1.03").id, "debit": amount, "credit": Decimal(0)},
+                {"account": common.account_by_code("1.1.1.02").id, "debit": Decimal(0), "credit": amount}])]}])
+        Move.post([move])
+        common.expect_state(move, "posted", what="bank deposit")
+    record(actor=actor, action="finance.bank_deposit", target_type="account.move", target_id=move.number,
+           branch_id=branch_id, amount=amount, reason=reference)
+    return {"move": move.number, "amount": amount}
