@@ -187,3 +187,13 @@ def test_suggestions_follow_the_role(login):
     owner = login("hm.owner").get("/api/ai/status").json()["suggestions"]
     assert not any("cash" in q.lower() or "margin" in q.lower() for q in ruth)
     assert any("margin" in q for q in owner)
+
+
+def test_profit_is_withheld_from_roles_without_finance_access(provider, login):
+    fake = provider([[("get_sales_trend", {"days": 7})], "ok"])
+    ask(login("inv.ruth"), "profit trend?")
+    trend = fake.tool_messages()[0]
+    assert all("gross_profit" not in d for d in trend["daily"]) and "not part of this user's access" in trend["note"]
+    fake = provider([[("get_sales_trend", {"days": 7})], "ok"])
+    ask(login("acc.amina"), "profit trend?")
+    assert all("gross_profit" in d for d in fake.tool_messages()[0]["daily"])

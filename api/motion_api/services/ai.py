@@ -94,7 +94,11 @@ def tool_profit_and_loss(actor: Principal, period: str = "month", branch_code: s
 def tool_sales_trend(actor: Principal, days: int = 14, branch_code: str | None = None) -> dict:
     days = max(7, min(int(days), 90))
     s = finance.daily_series(actor, days=days, branch_id=_branch_id(actor, branch_code))
-    return {"days": days, "daily": [{"day": r["day"], "net_sales": r["net_sales"], "gross_profit": r["gross_profit"]} for r in s]}
+    # Profit is finance information: only roles with finance access get it.
+    fin = actor.has("finance.view")
+    return {"days": days, "daily": [{"day": r["day"], "net_sales": r["net_sales"],
+                                     **({"gross_profit": r["gross_profit"]} if fin else {})} for r in s],
+            **({} if fin else {"note": "Profit figures are not part of this user's access."})}
 
 
 def tool_find_products(actor: Principal, query: str, branch_code: str | None = None) -> dict:
