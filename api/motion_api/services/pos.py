@@ -222,7 +222,7 @@ def till_catalog(actor: Principal, register_id: int) -> dict:
     items = catalog._rows()
     stock = common.stock_on_hand([reg["storage_location_id"]], [i["id"] for i in items]) if items else {}
     out = [{
-        "id": i["id"], "name": i["name"], "sku": i["sku"], "barcode": i["barcode"], "plu": i["plu"],
+        "id": i["id"], "name": i["name"], "sku": i["sku"], "barcode": i["barcode"], "barcodes": i["barcodes"], "plu": i["plu"],
         "category": i["category"], "uom": i["uom"], "sold_by_weight": i["sold_by_weight"],
         "price": i["shelf_price"], "vat": i["vat"],
         "on_hand": stock.get((reg["storage_location_id"], i["id"]), Decimal(0)),
@@ -560,15 +560,28 @@ def execute_refund(actor: Principal, *, approval_id: int, register_id: int, idem
     if not shift:
         raise Conflict("Open a shift on this register to pay out the refund.")
     sale = _sale_row(int(req["payload"]["sale_id"]))
+    if sale["kind"] != "sale" or sale["branch_id"] != req["branch_id"]:
+        raise Conflict("The approved refund no longer matches its original sale.")
     lines = []
+    seen: set[int] = set()
+    approved_amount = Decimal(0)
     for ln in req["payload"]["lines"]:
         orig = t.sql_one("SELECT * FROM motion.pos_sale_line WHERE id=%s FOR UPDATE", (int(ln["line_id"]),))
         q = common.qty(ln["quantity"])
+        # C1: every line must belong to the approved receipt, once, and still be refundable.
+        if not orig or orig["pos_sale_id"] != sale["id"] or orig["id"] in seen or orig["quantity"] <= 0:
+            raise Conflict("The approved refund lines do not match the original receipt.")
+        seen.add(orig["id"])
+        if q <= 0 or q > common.qty(orig["quantity"]) - common.qty(orig["refunded_qty"]):
+            raise Conflict("Part of this refund has already been paid out; request a new refund.")
+        approved_amount += _line_amount(q, Decimal(orig["unit_price"]))
         # CHECK (refunded_qty <= quantity) makes a duplicate refund impossible even under a race.
         t.execute("UPDATE motion.pos_sale_line SET refunded_qty = refunded_qty + %s WHERE id=%s", (q, orig["id"]))
         lines.append({"product_id": orig["product_id"], "quantity": -q, "unit_gross": Decimal(orig["unit_price"]),
                       "list_gross": Decimal(orig["unit_price"]), "discount_pct": 0, "refund_of_line": orig["id"]})
     total = sum((_line_amount(-ln["quantity"], ln["unit_gross"]) for ln in lines), Decimal(0))
+    if common.money(approved_amount) != common.money(req["amount"]):
+        raise Conflict("The refund amount no longer matches what was approved; request a new refund.")
     cashier = {"id": actor.user_id, "tryton_user_id": actor.tryton_user_id, "tryton_employee_id": actor.tryton_employee_id}
     result = post_sale(register=reg, cashier=cashier, lines=lines, payments=[{"method": "cash", "amount": -total}],
                        sale_date=_sale_date or common.today(), idempotency_key=idempotency_key, source="online", shift_id=shift["id"],

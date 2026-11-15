@@ -16,7 +16,7 @@ offline-capable branch tills, and evidence-linked business insights.
 | **API** | Python 3.12 · FastAPI · Pydantic |
 | **Web** | React 19 · TypeScript (strict) · Vite · Tailwind CSS 4 · TanStack Query · Recharts |
 | **Offline** | Branch-edge service (FastAPI + SQLite/WAL) with an immutable outbox |
-| **Tests** | 68 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 9 browser E2E (Playwright) |
+| **Tests** | 83 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 10 browser E2E (Playwright) |
 
 ---
 
@@ -41,7 +41,12 @@ offline-capable branch tills, and evidence-linked business insights.
 ## What it does
 
 **Point of sale**
-- Barcode scan (keyboard-wedge scanners), PLU entry and search, with large touch targets.
+- Barcode scanning with ordinary USB/Bluetooth scanners: plug in and scan, no driver needed. Scans are caught
+  anywhere on the till page, beep on success or failure, and treat UPC-A and EAN-13 forms as the same code. Each
+  product can have several barcodes, registered by scanning them on the product page (check digits validated, no
+  duplicates). Setup guide: [docs/barcode-scanners.md](docs/barcode-scanners.md).
+- PLU entry and search, with large touch targets.
+- Click the company logo to return to your dashboard; automatic sign-out after 5 minutes of inactivity.
 - **Foodstuff sold by weight**: rice, sugar, posho, beans, produce, meat and fish priced per kg, at gram precision.
   Price- or weight-embedded **scale labels** (EAN-13 starting with `2`) are decoded automatically.
 - Split tenders (cash, mobile money, card) with change calculation. Mobile money and card are recorded as
@@ -225,7 +230,9 @@ Environment variables, set in the Render dashboard and **never in Git**:
 | `MOTION_AUTO_BOOTSTRAP=1` | Run migrations, Tryton module activation and base setup on start (idempotent) |
 | `MOTION_SEED_DEMO=1` / `MOTION_DEMO_MODE=1` | Generate TEST DATA in the background and show the TEST DATA banner. Set both to `0` for a real client. |
 | `MOTION_SEED_PASSWORD_SECRET` | Derives the UAT account passwords (see below) |
-| `MOTION_OPEN_DEMO=1` | **Open demo**: password-less "continue as" account picker. Only honoured when `MOTION_DEMO_MODE=1`. **Currently ON for the live TEST site.** |
+| `MOTION_DEPLOYMENT` | `client` (default in production) or `demo`. A **client** deployment refuses to start if any demo/seed switch is on. The live TEST site is `demo`. |
+| `MOTION_OPEN_DEMO=1` | **Open demo**: password-less account picker (grouped Managers / Accountants / Inventory / Cashiers). Only on `demo` deployments, only for accounts flagged as demo accounts; turning it off ends every demo session immediately. |
+| `MOTION_SESSION_IDLE_MINUTES` | Automatic sign-out after inactivity (default **5**), enforced by both browser and server. |
 
 On start, the port binds immediately. Bootstrap runs in the background, and `/healthz` reports its phase. The app is
 usable once base setup finishes; the TEST DATA history keeps generating in the background and resumes per day if
@@ -275,7 +282,7 @@ a transfer with a 100 → 95 shortfall, a cash shortage, an interrupted shift, a
 ## Testing
 
 ```bash
-MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 68 integration tests
+MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 83 integration tests
 .venv/Scripts/ruff check api branch-edge tryton-modules
 (cd web && npx tsc -b --noEmit && npm run build)
 
@@ -372,7 +379,7 @@ The full policy is in [docs/accounting-policy.md](docs/accounting-policy.md).
 
 ## Status
 
-**Working and tested** (68 integration tests + 9 browser E2E; deployed on Render):
+**Working and tested** (83 integration tests + 10 browser E2E; deployed on Render):
 - POS, shifts and refunds
 - Stock, transfers, write-offs and counts
 - The procurement → payment chain, and expenses
@@ -398,7 +405,7 @@ The full policy is in [docs/accounting-policy.md](docs/accounting-policy.md).
   triggers can't be disabled. The Neon owner role is used for now.
 - **Hardware:** printers, scanners, cash drawers and power-loss behaviour have not been tested.
 
-The complete, itemised list is in [docs/implementation-status.md](docs/implementation-status.md).
+The complete, itemised list is in [docs/implementation-status.md](docs/implementation-status.md). Codex audit findings and their status: [docs/audit-response.md](docs/audit-response.md).
 
 ---
 

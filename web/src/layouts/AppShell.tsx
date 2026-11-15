@@ -3,13 +3,14 @@ import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import {
   ArrowLeftRight, BarChart3, Boxes, Building2, ChevronsLeft, ClipboardCheck, FileSpreadsheet, KeyRound, LayoutDashboard,
-  LogOut, Menu as MenuIcon, Moon, ReceiptText, ScanBarcode, ScrollText, ServerCog, ShieldCheck, ShoppingCart, Sparkles,
+  LogOut, Menu as MenuIcon, Moon, ReceiptText, ScanBarcode, ScrollText, ServerCog, ShieldCheck, Sparkles,
   Sun, Timer, Truck, Users, Wallet,
 } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { ROLE_LABELS, primaryRole, useAuth } from '../auth/auth'
+import { useIdleLogout } from '../auth/useIdleLogout'
 import { TestDataBadge } from '../components/ui'
 
 interface NavItem { to: string; label: string; icon: ReactNode; show: (can: (p: string) => boolean) => boolean; badge?: number }
@@ -39,6 +40,8 @@ export function AppShell() {
     refetchInterval: 60_000,
   })
   useEffect(() => setMobileOpen(false), [location.pathname])
+  const onIdle = useCallback(() => { void logout('idle') }, [logout])
+  useIdleLogout(meta?.session_idle_minutes ?? 5, onIdle)
   if (!me) return null
   const isCashierOnly = me.roles.length === 1 && me.roles[0] === 'cashier'
   const nav: { section: string; items: NavItem[] }[] = [
@@ -69,7 +72,8 @@ export function AppShell() {
   ]
   const sidebar = (
     <nav aria-label="Main" className="flex h-full flex-col">
-      <div className={clsx('flex h-16 items-center gap-2.5 border-b border-line px-4', collapsed && 'justify-center px-2')}>
+      <Link to="/" title="Go to my dashboard" aria-label={`${meta?.brand ?? 'Motion Retail'} — go to my dashboard`}
+        className={clsx('flex h-16 items-center gap-2.5 border-b border-line px-4 transition hover:bg-surface-2', collapsed && 'justify-center px-2')}>
         <img src="/favicon.svg" alt="" className="size-8 shrink-0" />
         {!collapsed && (
           <div className="min-w-0 leading-tight">
@@ -77,7 +81,7 @@ export function AppShell() {
             <div className="truncate text-[11.5px] text-muted">by Motion Imprints</div>
           </div>
         )}
-      </div>
+      </Link>
       <div className="flex-1 overflow-y-auto px-2.5 py-3">
         {nav.map((sec) => {
           const items = sec.items.filter((i) => i.show(can))
@@ -145,8 +149,9 @@ export function AppShell() {
               <Menu.Content align="end" sideOffset={6} className="z-50 min-w-[220px] rounded-xl border border-line bg-surface p-1.5 shadow-[var(--shadow-pop)]">
                 <div className="px-2.5 py-2 text-[12px] text-muted">Signed in as <b className="text-ink">{me.username}</b><br />{me.roles.map((r) => ROLE_LABELS[r]).join(', ')}</div>
                 <Menu.Separator className="my-1 h-px bg-line" />
-                <Menu.Item onSelect={() => navigate('/account/password')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><KeyRound className="size-4" />Change password</Menu.Item>
-                <Menu.Item onSelect={async () => { await logout(); navigate('/login') }} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] text-bad outline-none data-[highlighted]:bg-bad-soft"><LogOut className="size-4" />Sign out</Menu.Item>
+                {!meta?.open_demo && <Menu.Item onSelect={() => navigate('/account/password')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><KeyRound className="size-4" />Change password</Menu.Item>}
+                {meta?.open_demo && <Menu.Item onSelect={() => { void logout() }} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><Users className="size-4" />Switch demo account</Menu.Item>}
+                <Menu.Item onSelect={() => { void logout() }} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] text-bad outline-none data-[highlighted]:bg-bad-soft"><LogOut className="size-4" />Sign out</Menu.Item>
               </Menu.Content>
             </Menu.Portal>
           </Menu.Root>
@@ -159,6 +164,3 @@ export function AppShell() {
   )
 }
 
-export function ShoppingCartIcon() {
-  return <ShoppingCart />
-}

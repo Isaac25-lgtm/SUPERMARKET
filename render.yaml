@@ -14,16 +14,22 @@ services:
         sync: false         # set in the Render dashboard: Neon connection string
       - key: MOTION_SECRET_KEY
         generateValue: true
-      - key: MOTION_SEED_PASSWORD_SECRET
-        sync: false         # only needed for TEST DATA seeding; keep a copy to derive UAT passwords
+      # CLIENT-SAFE TEMPLATE (Codex C2): a client deployment refuses to start if any
+      # demo/seed switch is on. The isolated synthetic demo service instead sets
+      # MOTION_DEPLOYMENT=demo, MOTION_DEMO_MODE=1, MOTION_SEED_DEMO=1, MOTION_OPEN_DEMO=1
+      # (+ MOTION_SEED_PASSWORD_SECRET) in its own dashboard - never on client data.
+      - key: MOTION_DEPLOYMENT
+        value: client
       - key: MOTION_AUTO_BOOTSTRAP
         value: "1"
-      - key: MOTION_SEED_DEMO
-        value: "1"          # set to "0" for a real client database
       - key: MOTION_DEMO_MODE
-        value: "1"          # shows the TEST DATA banner
+        value: "0"
+      - key: MOTION_SEED_DEMO
+        value: "0"
       - key: MOTION_OPEN_DEMO
-        value: "1"          # password-less "continue as" picker; honoured only with MOTION_DEMO_MODE=1
+        value: "0"
+      - key: MOTION_SESSION_IDLE_MINUTES
+        value: "5"
       - key: MOTION_DB_PREFER_DIRECT
         value: "1"          # use Neon's direct endpoint, not the -pooler host
       - key: MOTION_DB_MAXCONN
@@ -31,6 +37,6 @@ services:
       - key: MOTION_BRAND_NAME
         value: FreshWay Supermarkets
       - key: MOTION_COMPANY_NAME
-        value: FreshWay Supermarkets Ltd (TEST)
+        value: FreshWay Supermarkets Ltd
       - key: MOTION_TIMEZONE
         value: Africa/Kampala

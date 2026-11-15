@@ -114,7 +114,7 @@ def build(actor: Principal, *, role: str | None = None, branch_id: int | None = 
                     pnl_today=finance.profit_and_loss(actor, period="today")["consolidated"],
                     ranking=_branch_ranking(actor), cash=finance.cash_position(actor),
                     recovery=_recovery_summary(actor), approvals=_approval_counts(actor),
-                    exceptions=_exceptions(actor, branch_ids), security=users.security_alerts(actor)[:6],
+                    exceptions=_exceptions(actor, branch_ids), security=users.security_alerts(actor)[:6] if actor.all_branches else [],
                     insights=[i for i in insights.generate(actor) if i["status"] == "new"][:6])
     elif role == "general_manager":
         data.update(pnl_month=finance.profit_and_loss(actor, period="month")["consolidated"], ranking=_branch_ranking(actor),
@@ -148,6 +148,8 @@ def build(actor: Principal, *, role: str | None = None, branch_id: int | None = 
 
 
 def _recovery_summary(actor: Principal) -> dict:
+    if not actor.all_branches:
+        return {"status": "no_investment", "message": "Capital recovery is a head-office (all-branch) report."}
     r = finance.capital_recovery(actor)
     return {k: r.get(k) for k in ("status", "investment_total", "recovered", "unrecovered", "recovered_pct",
                                    "estimated_recovery_date", "weeks_of_data", "message", "test_data")}

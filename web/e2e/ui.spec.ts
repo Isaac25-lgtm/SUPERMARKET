@@ -40,7 +40,10 @@ test('every navigation link renders for the Head Manager', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
   await login(page, 'hm.owner')
-  const links = await page.getByRole('navigation', { name: 'Main' }).getByRole('link').evaluateAll((els) => els.map((e) => (e as HTMLAnchorElement).pathname))
+  await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Audit trail' })).toBeVisible()
+  const links =await page.getByRole('navigation', { name: 'Main' }).getByRole('link').evaluateAll((els) => els.map((e) => (e as HTMLAnchorElement).pathname))
+  // M7: assert the expected navigation set before iterating (cannot pass with zero links).
+  for (const expected of ['/dashboard', '/approvals', '/stock', '/finance', '/admin/users', '/audit']) expect(links).toContain(expected)
   for (const href of links) {
     await page.goto(href)
     await page.waitForLoadState('networkidle')
@@ -54,9 +57,14 @@ test('every navigation link renders for the Head Manager', async ({ page }) => {
 test('cashier sells at the POS and gets a receipt', async ({ page }) => {
   await login(page, 'cash.cen1')
   await expect(page).toHaveURL(/\/pos/)
-  if (await page.getByRole('button', { name: 'Open shift' }).isVisible()) {
-    await page.getByRole('button', { name: 'Open shift' }).click()
+  // M7: wait for the till to settle into either the fresh-shift form or the open till.
+  const openShift = page.getByRole('button', { name: 'Open shift' })
+  const scanner = page.getByLabel('Scan barcode or search products')
+  await expect(openShift.or(scanner)).toBeVisible()
+  if (await openShift.isVisible()) {
+    await openShift.click()
   }
+  await expect(scanner).toBeVisible()
   await page.getByLabel('Scan barcode or search products').fill('Fresh milk')
   await page.getByRole('button', { name: /Fresh milk 500ml/ }).first().click()
   await page.getByRole('button', { name: /^Charge/ }).click()
@@ -74,4 +82,19 @@ test('cashier cannot reach back-office pages', async ({ page }) => {
   await login(page, 'cash.cen1')
   await page.goto('/admin/users')
   await expect(page.getByText('Not available for your role')).toBeVisible()
+})
+
+test('logo returns to the dashboard and sign-out lands on the sign-in page', async ({ page }) => {
+  await login(page, 'gm.grace')
+  await page.goto('/stock')
+  await page.getByRole('link', { name: /go to my dashboard/ }).click()
+  await expect(page).toHaveURL(/\/dashboard/)
+  await expect(page.getByText('Sales today (incl. VAT)')).toBeVisible()
+  await page.getByRole('button', { name: 'Account menu' }).click()
+  await page.getByRole('menuitem', { name: 'Sign out' }).click()
+  await expect(page).toHaveURL(/\/login/)
+  await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
+  // The old session is really gone: protected pages send you back to sign in.
+  await page.goto('/dashboard')
+  await expect(page).toHaveURL(/\/login/)
 })

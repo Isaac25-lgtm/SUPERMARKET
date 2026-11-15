@@ -91,7 +91,8 @@ function add(id) {
   if (i.sold_by_weight) { q = Number(prompt('Weight in kg for ' + i.name, '1')); if (!q) return; }
   const l = basket.find(x => x.i.id === id && !i.sold_by_weight); if (l) l.q += q; else basket.push({i, q}); render();
 }
-$('scan').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const v = $('scan').value.trim(); const i = items.find(x => x.barcode === v || x.plu === v); if (i) { add(i.id); $('scan').value = ''; } render(); } });
+const forms = (v) => /^\d{12}$/.test(v) ? [v, '0' + v] : /^0\d{12}$/.test(v) ? [v, v.slice(1)] : [v];
+$('scan').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const v = $('scan').value.trim(); const f = forms(v); const i = items.find(x => (x.barcodes || [x.barcode]).some(b => f.includes(b)) || x.plu === v); if (i) { add(i.id); $('scan').value = ''; } else if (v) { $('perr').textContent = 'Unknown barcode ' + v; } render(); } });
 $('scan').addEventListener('input', render); $('cash').addEventListener('input', render);
 let saleKey = crypto.randomUUID();
 async function pay() {

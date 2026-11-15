@@ -51,6 +51,14 @@ def classify(code: str) -> str | None:
     return None
 
 
+def require_company_wide(actor: Principal, action: str) -> None:
+    """H1: company-wide aggregates (trial balance, capital recovery, investments) are HQ-only."""
+    from ..errors import Forbidden
+
+    if not actor.all_branches:
+        raise Forbidden("This is a company-wide report; it needs all-branch (head office) access.", action=action)
+
+
 def period_bounds(period: str, date_from: dt.date | None = None, date_to: dt.date | None = None) -> tuple[dt.date, dt.date, str]:
     today = common.today()
     if period == "today":
@@ -269,6 +277,7 @@ def break_even(actor: Principal, *, period: str = "last30", branch_id: int | Non
 def capital_recovery(actor: Principal) -> dict:
     """Investment payback from dated net operating cash flows (NOT accounting profit)."""
     actor.require("finance.view", action="finance.payback")
+    require_company_wide(actor, "finance.payback")
     inv = t.sql("SELECT * FROM motion.investment ORDER BY invested_on")
     if not inv:
         return {"status": "no_investment", "message": "Record the original investment to track capital recovery."}
@@ -337,6 +346,7 @@ def ledger(actor: Principal, *, account_code: str | None = None, branch_id: int 
 
 def trial_balance(actor: Principal) -> dict:
     actor.require("finance.ledger")
+    require_company_wide(actor, "finance.trial_balance")
     rows = t.sql("""SELECT a.code, a.name, sum(l.debit) AS debit, sum(l.credit) AS credit FROM account_move_line l
                     JOIN account_move m ON m.id=l.move JOIN account_account a ON a.id=l.account
                     WHERE m.state='posted' GROUP BY 1,2 ORDER BY 1""")

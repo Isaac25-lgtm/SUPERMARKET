@@ -25,6 +25,8 @@ SELECT pp.id, pp.code AS sku, pt.id AS template_id, pt.name, pt.type, pt.salable
        pc.id AS category_id, pc.name AS category, u.symbol AS uom, u.digits AS uom_digits,
        gp.gross_price AS shelf_price, lp.list_price, cp.cost_price,
        (SELECT code FROM product_identifier pi WHERE pi.product = pp.id ORDER BY pi.sequence NULLS LAST, pi.id LIMIT 1) AS barcode,
+       COALESCE((SELECT array_agg(pi.code ORDER BY pi.sequence NULLS LAST, pi.id) FROM product_identifier pi
+                 WHERE pi.product = pp.id), '{}') AS barcodes,
        pol.sold_by_weight, pol.plu, pol.perishable, pol.shelf_life_days, pol.reorder_point, pol.reorder_qty,
        pol.preferred_supplier, pol.lead_time_days, pp.active,
        EXISTS (SELECT 1 FROM "product_category-customer-account_tax" r WHERE r.category = pc.id) AS vat
@@ -40,7 +42,7 @@ WHERE pt.type = 'goods' AND (%(active)s::bool IS NULL OR pp.active = %(active)s)
   AND (%(ids)s::int[] IS NULL OR pp.id = ANY(%(ids)s))
   AND (%(category)s::int IS NULL OR pc.id = %(category)s)
   AND (%(q)s::text IS NULL OR pt.name ILIKE %(q)s OR pp.code ILIKE %(q)s OR pol.plu = %(qraw)s
-       OR EXISTS (SELECT 1 FROM product_identifier pi WHERE pi.product = pp.id AND pi.code = %(qraw)s))
+       OR EXISTS (SELECT 1 FROM product_identifier pi WHERE pi.product = pp.id AND pi.code = ANY(%(codes)s)))
 ORDER BY pt.name
 """
 
@@ -48,7 +50,8 @@ ORDER BY pt.name
 def _rows(*, ids=None, q=None, category=None, active=True) -> list[dict]:
     qraw = q.strip() if q else None
     rows = t.sql(CATALOG_SQL, {"company": common.company_id(), "ids": ids, "category": category,
-                               "q": f"%{qraw}%" if qraw else None, "qraw": qraw, "active": active})
+                               "q": f"%{qraw}%" if qraw else None, "qraw": qraw, "active": active,
+                               "codes": barcode_candidates(qraw) if qraw else []})
     for r in rows:
         r["sold_by_weight"] = bool(r["sold_by_weight"])
         r["perishable"] = bool(r["perishable"])
@@ -133,10 +136,83 @@ def _scale_layout() -> dict:
 
 
 def ean13_valid(code: str) -> bool:
-    if len(code) != 13 or not code.isdigit():
+    return len(code) == 13 and gtin_valid(code)
+
+
+def gtin_valid(code: str) -> bool:
+    """GS1 mod-10 check digit for EAN-8, UPC-A (12), EAN-13 and GTIN-14."""
+    if not code.isdigit() or len(code) not in {8, 12, 13, 14}:
         return False
-    total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(code[:12]))
-    return (10 - total % 10) % 10 == int(code[12])
+    body, check = code[:-1], int(code[-1])
+    total = sum(int(d) * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(body)))
+    return (10 - total % 10) % 10 == check
+
+
+def normalize_barcode(raw: str) -> str:
+    """Validate a barcode for registration; UPC-A is stored in its EAN-13 form.
+
+    Numeric 8/12/13/14-digit codes must carry a valid GS1 check digit (a typo or a
+    mis-scan is rejected instead of being saved). Other codes (e.g. internal
+    Code 128 labels) may use letters, digits and dashes, up to 32 characters.
+    """
+    code = "".join((raw or "").split())
+    if not code:
+        raise Invalid("Enter or scan a barcode.")
+    if code.isdigit() and len(code) in {8, 12, 13, 14}:
+        if not gtin_valid(code):
+            raise Invalid(f"{code} has an invalid check digit — rescan the item or check the digits.")
+        return "0" + code if len(code) == 12 else code
+    if len(code) > 32 or not all(c.isalnum() or c == "-" for c in code):
+        raise Invalid("Barcodes may contain only letters, digits and dashes (max 32).")
+    if code.isdigit() and len(code) < 6:
+        raise Invalid("That looks like a PLU or SKU, not a barcode.")
+    return code
+
+
+def barcode_candidates(raw: str) -> list[str]:
+    """Forms of a scanned code to look up (UPC-A 12 digits == EAN-13 with a leading 0)."""
+    code = "".join((raw or "").split())
+    out = [code]
+    if code.isdigit() and len(code) == 12:
+        out.append("0" + code)
+    if code.isdigit() and len(code) == 13 and code.startswith("0"):
+        out.append(code[1:])
+    return out
+
+
+def _barcode_owner(code: str, exclude_product: int | None = None) -> dict | None:
+    return t.sql_one("""SELECT pi.product, pt.name FROM product_identifier pi JOIN product_product pp ON pp.id = pi.product
+                        JOIN product_template pt ON pt.id = pp.template
+                        WHERE pi.code = ANY(%s) AND (%s::int IS NULL OR pi.product <> %s) LIMIT 1""",
+                     (barcode_candidates(code), exclude_product, exclude_product))
+
+
+def add_barcode(actor: Principal, product_id: int, raw: str) -> dict:
+    actor.require("catalog.manage", action="catalog.barcode.add")
+    if not _rows(ids=[product_id], active=None):
+        raise NotFound("Product not found.")
+    code = normalize_barcode(raw)
+    owner = _barcode_owner(code)
+    if owner:
+        if owner["product"] == product_id:
+            raise Conflict("This barcode is already registered on this product.")
+        raise Conflict(f"Barcode {code} is already used by '{owner['name']}'.")
+    Identifier = t.model("product.identifier")
+    Identifier.create([{"product": product_id, "code": code,
+                        "type": "ean" if code.isdigit() and len(code) in {8, 13} else None}])
+    record(actor=actor, action="catalog.barcode.add", target_type="product", target_id=product_id, after={"barcode": code})
+    return product(actor, product_id)
+
+
+def remove_barcode(actor: Principal, product_id: int, code: str) -> dict:
+    actor.require("catalog.manage", action="catalog.barcode.remove")
+    Identifier = t.model("product.identifier")
+    found = Identifier.search([("product", "=", product_id), ("code", "in", barcode_candidates(code))])
+    if not found:
+        raise NotFound("That barcode is not registered on this product.")
+    Identifier.delete(found)
+    record(actor=actor, action="catalog.barcode.remove", target_type="product", target_id=product_id, before={"barcode": code})
+    return product(actor, product_id)
 
 
 def lookup(actor: Principal, code: str, branch_id: int | None = None) -> dict:
@@ -147,8 +223,8 @@ def lookup(actor: Principal, code: str, branch_id: int | None = None) -> dict:
         raise Invalid("Scan or type a code.")
     rows = t.sql("""SELECT pp.id FROM product_product pp LEFT JOIN motion.product_policy pol ON pol.product_id = pp.id
                     WHERE pp.active AND (pp.code = %(c)s OR pol.plu = %(c)s
-                          OR EXISTS (SELECT 1 FROM product_identifier pi WHERE pi.product = pp.id AND pi.code = %(c)s))
-                    LIMIT 2""", {"c": code})
+                          OR EXISTS (SELECT 1 FROM product_identifier pi WHERE pi.product = pp.id AND pi.code = ANY(%(codes)s)))
+                    LIMIT 2""", {"c": code, "codes": barcode_candidates(code)})
     scale = None
     if not rows and ean13_valid(code) and code[0] == "2":
         layout = _scale_layout()
@@ -162,7 +238,7 @@ def lookup(actor: Principal, code: str, branch_id: int | None = None) -> dict:
             elif code[:2] in layout["price_prefixes"]:
                 scale = {"kind": "price", "amount": common.money(value * layout.get("price_multiplier", 10))}
     if not rows:
-        raise NotFound(f"No product matches '{code}'.")
+        raise NotFound(f"Unknown barcode {code}. Ask the inventory manager to register it on the product.")
     if len(rows) > 1:
         raise Conflict("That code matches more than one product; fix the catalog.")
     item = _rows(ids=[rows[0]["id"]])[0]
@@ -205,8 +281,11 @@ def create_product(actor: Principal, *, name: str, category_id: int, shelf_price
         raise Invalid("Prices must be positive.")
     if plu and (len(plu) != 5 or not plu.isdigit()):
         raise Invalid("PLU must be 5 digits.")
-    if barcode and t.sql_one("SELECT 1 AS x FROM product_identifier WHERE code=%s", (barcode,)):
-        raise Conflict("That barcode is already used by another product.")
+    if barcode:
+        barcode = normalize_barcode(barcode)
+        owner = _barcode_owner(barcode)
+        if owner:
+            raise Conflict(f"Barcode {barcode} is already used by '{owner['name']}'.")
     if plu and t.sql_one("SELECT 1 AS x FROM motion.product_policy WHERE plu=%s", (plu,)):
         raise Conflict("That PLU is already used.")
     Template = t.model("product.template")
@@ -218,7 +297,7 @@ def create_product(actor: Principal, *, name: str, category_id: int, shelf_price
         "cost_price_method": "average", "list_price": _list_price_from_gross(shelf_price, category_id),
         "gross_price": shelf_price,
         "products": [("create", [{"code": sku or None, "cost_price": Decimal(cost_price),
-                                   "identifiers": [("create", [{"type": "ean" if barcode and len(barcode) == 13 else None,
+                                   "identifiers": [("create", [{"type": "ean" if barcode and barcode.isdigit() and len(barcode) in {8, 13} else None,
                                                                 "code": barcode}])] if barcode else []}])],
     }
     template, = Template.create([values])
@@ -255,11 +334,15 @@ def update_product(actor: Principal, product_id: int, *, name: str | None = None
         Product.write([prod], {"active": active})
     if barcode is not None:
         Identifier = t.model("product.identifier")
-        if barcode and t.sql_one("SELECT 1 AS x FROM product_identifier WHERE code=%s AND product<>%s", (barcode, product_id)):
-            raise Conflict("That barcode is already used by another product.")
+        if barcode:
+            barcode = normalize_barcode(barcode)
+            owner = _barcode_owner(barcode, exclude_product=product_id)
+            if owner:
+                raise Conflict(f"Barcode {barcode} is already used by '{owner['name']}'.")
         Identifier.delete(Identifier.search([("product", "=", product_id)]))
         if barcode:
-            Identifier.create([{"product": product_id, "code": barcode, "type": "ean" if len(barcode) == 13 else None}])
+            Identifier.create([{"product": product_id, "code": barcode,
+                                "type": "ean" if barcode.isdigit() and len(barcode) in {8, 13} else None}])
     t.execute("""UPDATE motion.product_policy SET reorder_point=COALESCE(%s, reorder_point), reorder_qty=COALESCE(%s, reorder_qty),
                  perishable=COALESCE(%s, perishable), shelf_life_days=COALESCE(%s, shelf_life_days),
                  preferred_supplier=COALESCE(%s, preferred_supplier), updated_at=now() WHERE product_id=%s""",

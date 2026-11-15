@@ -4,7 +4,7 @@ import { Lock, ShieldCheck, Store, WifiOff } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { z } from 'zod'
 import { api } from '../api/client'
 import { ROLE_LABELS, primaryRole, useAuth } from '../auth/auth'
@@ -66,6 +66,7 @@ export function LoginPage() {
             {meta?.test_data && <TestDataBadge />}
           </div>
           <p className="mt-1 text-sm text-muted">Use the account your manager created for you.</p>
+          <SignedOutNotice />
           <form onSubmit={onSubmit} className="mt-7 space-y-4" noValidate>
             <Field label="Username" htmlFor="username" error={formState.errors.username?.message}>
               <Input id="username" autoComplete="username" autoCapitalize="none" spellCheck={false} autoFocus {...register('username')} />
@@ -117,20 +118,52 @@ function DemoPicker({ brand }: { brand: string }) {
         <div className="mt-5 rounded-xl border border-warn/30 bg-warn-soft px-4 py-3 text-[13px] text-warn">
           This is a public demonstration with synthetic TEST DATA. Each account keeps its real permissions and branch limits, and every action is recorded in the audit trail.
         </div>
+        <SignedOutNotice />
         <ErrorBox error={error ?? q.error} className="mt-4" />
-        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {accounts.map((a) => (
-            <button key={a.username} onClick={() => go(a.username)} disabled={!!busy}
-              className="group flex flex-col rounded-[var(--radius-card)] border border-line bg-surface p-4 text-left shadow-[var(--shadow-card)] transition hover:border-accent/60 hover:shadow-md disabled:opacity-60">
-              <span className="text-[12px] font-semibold uppercase tracking-wide text-accent">{ROLE_LABELS[primaryRole(a.roles)]}</span>
-              <span className="mt-1 text-[15px] font-semibold">{a.full_name.replace(/\s*\(TEST.*\)/, '')}</span>
-              <span className="mt-0.5 text-[12.5px] text-muted">{a.username} · {a.all_branches ? 'all branches' : a.branches.join(', ') || 'no branch'}</span>
-              <span className="mt-3 text-[13px] font-medium text-accent group-hover:underline">{busy === a.username ? 'Signing in…' : 'Continue as this user →'}</span>
-            </button>
-          ))}
-        </div>
+        {GROUPS.map((g) => {
+          const members = accounts.filter((a) => g.roles.includes(primaryRole(a.roles)))
+          if (!members.length) return null
+          return (
+            <section key={g.title} className="mt-7" aria-labelledby={`grp-${g.title}`}>
+              <h2 id={`grp-${g.title}`} className="text-[15px] font-semibold tracking-tight">
+                {g.title} <span className="ml-1 text-[12.5px] font-normal text-muted">{g.hint}</span>
+              </h2>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {members.map((a) => (
+                  <button key={a.username} onClick={() => go(a.username)} disabled={!!busy}
+                    className="group flex flex-col rounded-[var(--radius-card)] border border-line bg-surface p-4 text-left shadow-[var(--shadow-card)] transition hover:border-accent/60 hover:shadow-md disabled:opacity-60">
+                    <span className="text-[12px] font-semibold uppercase tracking-wide text-accent">{ROLE_LABELS[primaryRole(a.roles)]}</span>
+                    <span className="mt-1 text-[15px] font-semibold">{a.full_name.replace(/\s*\(TEST.*\)/, '')}</span>
+                    <span className="mt-0.5 text-[12.5px] text-muted">{a.username} · {a.all_branches ? 'all branches' : a.branches.join(', ') || 'no branch'}</span>
+                    <span className="mt-3 text-[13px] font-medium text-accent group-hover:underline">{busy === a.username ? 'Signing in…' : 'Continue as this user →'}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )
+        })}
         {q.isLoading && <p className="mt-6 text-sm text-muted">Loading accounts…</p>}
       </div>
+    </div>
+  )
+}
+
+// Picker sections, in the order staff usually look for them.
+const GROUPS: { title: string; hint: string; roles: string[] }[] = [
+  { title: 'Managers', hint: 'Head Manager, General, Operations and Branch Managers', roles: ['owner', 'general_manager', 'operations_manager', 'branch_manager'] },
+  { title: 'Accountants', hint: 'Finance, payables and cash reconciliation', roles: ['accountant'] },
+  { title: 'Inventory', hint: 'Stock, products, receiving and transfers', roles: ['inventory_manager'] },
+  { title: 'Cashiers', hint: 'Point of sale tills', roles: ['cashier'] },
+  { title: 'Technical', hint: 'System administration only', roles: ['sysadmin'] },
+]
+
+function SignedOutNotice() {
+  const [params] = useSearchParams()
+  const reason = params.get('reason')
+  if (reason !== 'idle') return null
+  return (
+    <div role="status" className="mt-4 rounded-lg border border-info/25 bg-info-soft px-3 py-2.5 text-[13px] text-info">
+      You were signed out after 5 minutes without activity. Sign in again to continue.
     </div>
   )
 }

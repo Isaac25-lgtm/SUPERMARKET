@@ -119,8 +119,13 @@ def _load_for_update(request_id: int) -> dict:
     return row
 
 
-def _authority(actor: Principal, role: str, amount: Decimal) -> tuple[str, int | None] | None:
-    """Return (acting_role, delegated_from) when actor may act for ``role``."""
+def _authority(actor: Principal, role: str, amount: Decimal, branch_id: int) -> tuple[str, int | None] | None:
+    """Return (acting_role, delegated_from) when actor may act for ``role`` on ``branch_id``.
+
+    H1: the actor must cover the branch, and a delegation only counts when the
+    delegator currently holds the role *and* covers the same branch."""
+    if not actor.can_branch(branch_id):
+        return None
     if role in actor.roles:
         return role, None
     d = t.sql_one("""
@@ -129,7 +134,9 @@ def _authority(actor: Principal, role: str, amount: Decimal) -> tuple[str, int |
         JOIN motion.app_user fu ON fu.id = d.from_user AND fu.status='active'
         WHERE d.to_user=%s AND d.role_code=%s AND d.revoked_at IS NULL AND now() BETWEEN d.starts_at AND d.ends_at
           AND (d.max_amount IS NULL OR d.max_amount >= %s)
-        ORDER BY d.ends_at DESC LIMIT 1""", (actor.user_id, role, amount))
+          AND (fu.all_branches OR EXISTS (SELECT 1 FROM motion.user_branch ub
+                                           WHERE ub.user_id = d.from_user AND ub.branch_id = %s))
+        ORDER BY d.ends_at DESC LIMIT 1""", (actor.user_id, role, amount, branch_id))
     if d:
         return role, d["from_user"]
     return None
@@ -151,7 +158,7 @@ def act(actor: Principal, request_id: int, *, decision: str, comment: str | None
     steps = req["steps"]
     idx = req["current_step"]
     step = steps[idx]
-    authority = _authority(actor, step["role"], req["amount"])
+    authority = _authority(actor, step["role"], req["amount"], req["branch_id"])
     if not authority:
         raise Forbidden(f"This step needs: {step['label']} ({step['role']}).", action=audit_action,
                         target_type="approval", target_id=req["ref"], branch_id=req["branch_id"])
@@ -188,31 +195,17 @@ def act(actor: Principal, request_id: int, *, decision: str, comment: str | None
     return get(actor, request_id, _skip_visibility=True)
 
 
-def resubmit(actor: Principal, request_id: int, *, payload: dict, amount: Decimal, title: str | None,
-             justification: str | None) -> dict:
+def resubmit(actor: Principal, request_id: int, **_ignored) -> dict:
+    """C1: generic payload editing is disabled.
+
+    A returned request is corrected by cancelling it and submitting a new request
+    through the original, typed workflow (requisition, transfer, refund, expense,
+    write-off, payment), so every amount and resource id is re-derived and
+    re-validated by the same server-side code as the first submission.
+    """
     req = _load_for_update(request_id)
-    if req["initiator_id"] != actor.user_id:
-        raise Forbidden("Only the person who raised the request can resubmit it.", action="approval.resubmit",
-                        target_type="approval", target_id=req["ref"])
-    if req["status"] != "returned":
-        raise Conflict("Only requests returned for correction can be resubmitted.")
-    amount = common.money(amount)
-    policy = policy_for(req["action_type"], req["branch_id"], amount)
-    if not policy:
-        raise Forbidden("No approval authority is configured for this amount (default deny).",
-                        action="approval.no_policy", branch_id=req["branch_id"])
-    t.execute("""UPDATE motion.approval_request SET payload=%s::jsonb, amount=%s, title=COALESCE(%s,title),
-                 justification=COALESCE(%s, justification), status='pending', current_step=0, steps=%s::jsonb,
-                 policy_id=%s, revision=revision+1, updated_at=now() WHERE id=%s""",
-              (json.dumps(payload, default=str), amount, title, justification, json.dumps(policy["steps"]),
-               policy["id"], request_id))
-    t.execute("""INSERT INTO motion.approval_action (request_id, actor_id, action, comment, from_status, to_status,
-                 payload_snapshot) VALUES (%s,%s,'resubmit',%s,'returned','pending',%s::jsonb)""",
-              (request_id, actor.user_id, justification, json.dumps(payload, default=str)))
-    record(actor=actor, action=f"approval.{req['action_type']}.resubmit", target_type="approval",
-           target_id=req["ref"], branch_id=req["branch_id"], amount=amount,
-           before={"amount": str(req["amount"]), "payload": req["payload"]}, after={"amount": str(amount), "payload": payload})
-    return get(actor, request_id)
+    raise Conflict(f"{req['ref']} cannot be edited. Cancel it and submit a corrected request through the original form, "
+                   "so it is validated again.")
 
 
 def cancel(actor: Principal, request_id: int, reason: str) -> dict:
@@ -268,8 +261,9 @@ def get(actor: Principal, request_id: int, _skip_visibility: bool = False) -> di
     if not row:
         raise NotFound("Approval request not found.")
     if not _skip_visibility:
-        visible = row["initiator_id"] == actor.user_id or (
-            actor.can_branch(row["branch_id"]) and (actor.has("approvals.inbox") or actor.has("audit.view")))
+        # H1: visibility needs *current* branch scope, even for the initiator.
+        visible = actor.can_branch(row["branch_id"]) and (
+            row["initiator_id"] == actor.user_id or actor.has("approvals.inbox") or actor.has("audit.view"))
         if not visible:
             raise Forbidden("You cannot view this request.", action="approval.view", target_type="approval",
                             target_id=row["ref"], branch_id=row["branch_id"])
@@ -283,7 +277,7 @@ def get(actor: Principal, request_id: int, _skip_visibility: bool = False) -> di
     me_step = None
     if row["status"] == "pending" and row["initiator_id"] != actor.user_id and actor.can_branch(row["branch_id"]):
         step = row["steps"][row["current_step"]]
-        if _authority(actor, step["role"], row["amount"]):
+        if _authority(actor, step["role"], row["amount"], row["branch_id"]):
             me_step = step
     row["can_act"] = me_step is not None
     return row
@@ -303,13 +297,15 @@ def inbox(actor: Principal) -> dict:
         step = r["steps"][r["current_step"]]
         d = _decorate(r)
         d["overdue"] = bool(r["due_at"] and r["due_at"] < common_now())
-        if r["initiator_id"] != actor.user_id and _authority(actor, step["role"], r["amount"]):
+        if r["initiator_id"] != actor.user_id and _authority(actor, step["role"], r["amount"], r["branch_id"]):
             actionable.append(d)
-        else:
+        elif r["initiator_id"] == actor.user_id or {st["role"] for st in r["steps"]} & actor.roles:
+            # H1: only requests the person raised or could act on at some step.
             watching.append(d)
     mine = [_decorate(r) for r in t.sql("""
         SELECT r.*, b.name AS branch_name FROM motion.approval_request r JOIN motion_branch b ON b.id=r.branch_id
-        WHERE r.initiator_id=%s ORDER BY r.updated_at DESC LIMIT 50""", (actor.user_id,))]
+        WHERE r.initiator_id=%s AND (%s OR r.branch_id = ANY(%s)) ORDER BY r.updated_at DESC LIMIT 50""",
+        (actor.user_id, actor.all_branches, sorted(actor.branch_ids)))]
     return {"actionable": actionable, "watching": watching[:50], "mine": mine}
 
 
@@ -320,7 +316,7 @@ def history(actor: Principal, *, action_type: str | None = None, status: str | N
         FROM motion.approval_request r JOIN motion.app_user u ON u.id=r.initiator_id JOIN motion_branch b ON b.id=r.branch_id
         WHERE (%s::text IS NULL OR r.action_type=%s) AND (%s::text IS NULL OR r.status=%s)
         ORDER BY r.updated_at DESC LIMIT %s""", (action_type, action_type, status, status, limit))
-    return [_decorate(r) for r in rows if actor.can_branch(r["branch_id"]) or r["initiator_id"] == actor.user_id]
+    return [_decorate(r) for r in rows if actor.can_branch(r["branch_id"])]
 
 
 def common_now():
@@ -331,6 +327,12 @@ def common_now():
 
 # ---------------------------------------------------------------- policies & delegation
 
+def _require_company_admin(actor: Principal, action: str) -> None:
+    """H1: approval policy and delegation administration is company-wide authority."""
+    if not actor.all_branches:
+        raise Forbidden("This administration is company-wide; it needs all-branch (head office) access.", action=action)
+
+
 def list_policies(actor: Principal) -> list[dict]:
     actor.require_any("admin.policies", "approvals.inbox")
     return t.sql("SELECT * FROM motion.approval_policy WHERE active ORDER BY action_type, min_amount")
@@ -339,6 +341,7 @@ def list_policies(actor: Principal) -> list[dict]:
 def replace_policy(actor: Principal, policy_id: int, *, min_amount: Decimal, max_amount: Decimal | None,
                    steps: list[dict], reason: str) -> dict:
     actor.require("admin.policies", action="admin.policy.change")
+    _require_company_admin(actor, "admin.policy.change")
     old = t.sql_one("SELECT * FROM motion.approval_policy WHERE id=%s AND active FOR UPDATE", (policy_id,))
     if not old:
         raise NotFound("Policy not found.")
@@ -366,6 +369,7 @@ def replace_policy(actor: Principal, policy_id: int, *, min_amount: Decimal, max
 def create_delegation(actor: Principal, *, from_user: int, to_user: int, role_code: str, max_amount: Decimal | None,
                       starts_at, ends_at, reason: str) -> dict:
     actor.require("admin.users", action="admin.delegation.create")
+    _require_company_admin(actor, "admin.delegation.create")
     if to_user == actor.user_id:
         raise Forbidden("You cannot delegate authority to yourself.", action="admin.delegation.self")
     if not t.sql_one("SELECT 1 AS x FROM motion.user_role WHERE user_id=%s AND role_code=%s", (from_user, role_code)):
@@ -382,6 +386,7 @@ def create_delegation(actor: Principal, *, from_user: int, to_user: int, role_co
 
 def list_delegations(actor: Principal) -> list[dict]:
     actor.require("admin.users")
+    _require_company_admin(actor, "admin.delegation.list")
     return t.sql("""SELECT d.*, f.full_name AS from_name, tu.full_name AS to_name FROM motion.delegation d
                     JOIN motion.app_user f ON f.id=d.from_user JOIN motion.app_user tu ON tu.id=d.to_user
                     ORDER BY d.created_at DESC LIMIT 100""")
@@ -389,6 +394,7 @@ def list_delegations(actor: Principal) -> list[dict]:
 
 def revoke_delegation(actor: Principal, delegation_id: int, reason: str) -> None:
     actor.require("admin.users", action="admin.delegation.revoke")
+    _require_company_admin(actor, "admin.delegation.revoke")
     n = t.execute("UPDATE motion.delegation SET revoked_at=now() WHERE id=%s AND revoked_at IS NULL", (delegation_id,))
     if not n:
         raise NotFound("Delegation not found or already revoked.")
@@ -398,6 +404,7 @@ def revoke_delegation(actor: Principal, delegation_id: int, reason: str) -> None
 def mine(actor: Principal, action_type: str | None = None) -> list[dict]:
     """Requests raised by the caller (no inbox permission needed: e.g. cashier refund requests)."""
     rows = t.sql("""SELECT r.*, b.name AS branch_name FROM motion.approval_request r JOIN motion_branch b ON b.id=r.branch_id
-                    WHERE r.initiator_id=%s AND (%s::text IS NULL OR r.action_type=%s)
-                    ORDER BY r.updated_at DESC LIMIT 50""", (actor.user_id, action_type, action_type))
+                    WHERE r.initiator_id=%s AND (%s::text IS NULL OR r.action_type=%s) AND (%s OR r.branch_id = ANY(%s))
+                    ORDER BY r.updated_at DESC LIMIT 50""",
+                 (actor.user_id, action_type, action_type, actor.all_branches, sorted(actor.branch_ids)))
     return [_decorate(r) for r in rows]

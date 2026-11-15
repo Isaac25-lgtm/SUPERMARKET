@@ -139,9 +139,16 @@ def authenticate_session(token: str | None, meta: RequestMeta) -> Principal:
     now = utcnow()
     if not row or row["revoked_at"] is not None or row["expires_at"] <= now or row["status"] != "active":
         raise Unauthenticated("Your session has ended. Please sign in again.")
+    if row["origin"] == "demo" and not settings.open_demo:
+        # C2: switching open demo off ends every demo session immediately.
+        # Persist the revocation in its own transaction: this one rolls back when we raise.
+        with t.transaction().new_transaction() as tr:
+            tr.connection.cursor().execute(
+                "UPDATE motion.session SET revoked_at=now(), revoked_reason='demo_closed' WHERE id_hash=%s", (id_hash,))
+        raise Unauthenticated("Demo access has ended. Please sign in.")
     if row["last_seen_at"] + timedelta(minutes=settings.session_idle_minutes) <= now:
         raise Unauthenticated("Signed out after inactivity. Please sign in again.")
-    if now - row["last_seen_at"] > timedelta(minutes=2):
+    if now - row["last_seen_at"] > timedelta(seconds=60):
         t.execute("UPDATE motion.session SET last_seen_at=now() WHERE id_hash=%s", (id_hash,))
     meta.session_ref = id_hash[:12]
     return load_principal(row["user_id"], session_hash=id_hash, meta=meta)
@@ -198,14 +205,14 @@ def login(username: str, password: str, meta: RequestMeta) -> LoginResult:
     return LoginResult(principal, token, csrf, expires)
 
 
-def open_session(user_id: int, meta: RequestMeta, *, action: str) -> LoginResult:
+def open_session(user_id: int, meta: RequestMeta, *, action: str, origin: str = "password") -> LoginResult:
     settings = get_settings()
     token = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(24)
     expires = utcnow() + timedelta(minutes=settings.session_ttl_minutes)
     t.execute(
-        "INSERT INTO motion.session (id_hash, user_id, csrf_hash, expires_at, ip, user_agent) VALUES (%s,%s,%s,%s,%s,%s)",
-        (sha256(token), user_id, sha256(csrf), expires, meta.ip, (meta.user_agent or "")[:300]))
+        "INSERT INTO motion.session (id_hash, user_id, csrf_hash, expires_at, ip, user_agent, origin) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (sha256(token), user_id, sha256(csrf), expires, meta.ip, (meta.user_agent or "")[:300], origin))
     t.execute("UPDATE motion.app_user SET last_login_at=now() WHERE id=%s", (user_id,))
     meta.session_ref = sha256(token)[:12]
     principal = load_principal(user_id, session_hash=sha256(token), meta=meta)
@@ -220,16 +227,17 @@ def demo_accounts() -> list[dict]:
                COALESCE((SELECT array_agg(role_code ORDER BY role_code) FROM motion.user_role r WHERE r.user_id=u.id), '{}') AS roles,
                COALESCE((SELECT array_agg(b.code ORDER BY b.code) FROM motion.user_branch ub
                          JOIN motion_branch b ON b.id = ub.branch_id WHERE ub.user_id=u.id), '{}') AS branches
-        FROM motion.app_user u WHERE u.status='active' AND NOT u.must_change_password ORDER BY u.id""")
+        FROM motion.app_user u WHERE u.is_demo AND u.status='active' AND NOT u.must_change_password ORDER BY u.id""")
 
 
 def demo_login(username: str, meta: RequestMeta) -> LoginResult:
     if not get_settings().open_demo:
         raise Forbidden("Open demo sign-in is disabled.", action="auth.demo_login.disabled")
     row = t.sql_one("SELECT * FROM motion.app_user WHERE lower(username)=%s", ((username or "").strip().lower(),))
-    if not row or row["status"] != "active" or row["must_change_password"]:
+    # C2: only accounts explicitly marked as demo accounts can be opened without a password.
+    if not row or not row["is_demo"] or row["status"] != "active" or row["must_change_password"]:
         raise Unauthenticated("That account is not available in the demo.")
-    return open_session(row["id"], meta, action="auth.demo_login")
+    return open_session(row["id"], meta, action="auth.demo_login", origin="demo")
 
 
 class _LoginFailed(Unauthenticated):

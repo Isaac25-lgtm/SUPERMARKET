@@ -275,7 +275,7 @@ def evidence(request: Request, branch_id: int, product_ids: str):
             ids = [int(x) for x in product_ids.split(",") if x]
         except ValueError as exc:
             raise Invalid("product_ids must be comma-separated integers.") from exc
-        return {"evidence": purchasing.requisition_evidence(branch_id, ids)}
+        return {"evidence": purchasing.requisition_evidence(branch_id, ids, p)}
     return MotionJSON(unit_of_work(request, fn))
 
 
@@ -392,6 +392,7 @@ class InvestmentIn(BaseModel):
 def add_investment(body: InvestmentIn, request: Request):
     def fn(p: Principal):
         p.require("finance.investment", action="finance.investment.add")
+        finance.require_company_wide(p, "finance.investment.add")
         row = t.sql_one("""INSERT INTO motion.investment (label, amount, invested_on, note, created_by)
                            VALUES (%s,%s,%s,%s,%s) RETURNING *""",
                         (body.label, body.amount, body.invested_on, body.note, p.user_id))

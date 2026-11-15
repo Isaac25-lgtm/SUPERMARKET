@@ -36,6 +36,13 @@ def _tryton_identity(full_name: str, username: str) -> tuple[int, int]:
     return user.id, employee.id
 
 
+def _require_company_admin(actor: Principal, action: str) -> None:
+    """H1: user administration is company-wide authority (all-branch head office)."""
+    actor.require("admin.users", action=action)
+    if not actor.all_branches:
+        raise Forbidden("User administration is company-wide; it needs all-branch (head office) access.", action=action)
+
+
 def _user_row(user_id: int) -> dict:
     row = t.sql_one("SELECT * FROM motion.app_user WHERE id=%s", (user_id,))
     if not row:
@@ -70,7 +77,7 @@ def _validate_grants(actor: Principal, roles: list[str], branch_ids: list[int], 
 
 
 def list_users(actor: Principal) -> list[dict]:
-    actor.require("admin.users")
+    _require_company_admin(actor, "admin.users")
     rows = t.sql("""
         SELECT u.id, u.username, u.full_name, u.email, u.status, u.all_branches, u.last_login_at,
                u.failed_logins, u.locked_until, u.must_change_password, u.created_at,
@@ -83,7 +90,7 @@ def list_users(actor: Principal) -> list[dict]:
 
 
 def get_user(actor: Principal, user_id: int) -> dict:
-    actor.require("admin.users")
+    _require_company_admin(actor, "admin.users")
     users = [u for u in list_users(actor) if u["id"] == user_id]
     if not users:
         raise NotFound("User not found.")
@@ -100,7 +107,7 @@ def get_user(actor: Principal, user_id: int) -> dict:
 def create_user(actor: Principal, *, username: str, full_name: str, email: str | None, roles: list[str],
                 branch_ids: list[int], all_branches: bool, temporary_password: str | None = None,
                 must_change_password: bool = True) -> dict:
-    actor.require("admin.users", action="admin.users.create")
+    _require_company_admin(actor, "admin.users.create")
     username = username.strip().lower()
     if not USERNAME_RE.match(username):
         raise Invalid("Username must be 3-32 chars: lowercase letters, digits, dot, dash or underscore.")
@@ -130,7 +137,7 @@ def create_user(actor: Principal, *, username: str, full_name: str, email: str |
 
 def update_access(actor: Principal, user_id: int, *, roles: list[str], branch_ids: list[int], all_branches: bool,
                   reason: str) -> dict:
-    actor.require("admin.users", action="admin.user.access")
+    _require_company_admin(actor, "admin.user.access")
     if user_id == actor.user_id:
         raise Forbidden("You cannot change your own roles or branch access.", action="admin.user.access.self",
                         target_type="user", target_id=str(user_id))
@@ -156,7 +163,7 @@ def update_access(actor: Principal, user_id: int, *, roles: list[str], branch_id
 
 
 def set_status(actor: Principal, user_id: int, *, status: str, reason: str) -> dict:
-    actor.require("admin.users", action=f"admin.user.{status}")
+    _require_company_admin(actor, f"admin.user.{status}")
     if status not in {"active", "suspended"}:
         raise Invalid("Unknown status.")
     if user_id == actor.user_id:
@@ -177,7 +184,7 @@ def set_status(actor: Principal, user_id: int, *, status: str, reason: str) -> d
 
 
 def revoke_sessions(actor: Principal, user_id: int, reason: str) -> int:
-    actor.require("admin.users", action="admin.user.revoke_sessions")
+    _require_company_admin(actor, "admin.user.revoke_sessions")
     _user_row(user_id)
     n = revoke_user_sessions(user_id, "admin_revoked")
     record(actor=actor, action="admin.user.revoke_sessions", target_type="user", target_id=user_id, reason=reason,
@@ -186,7 +193,7 @@ def revoke_sessions(actor: Principal, user_id: int, reason: str) -> int:
 
 
 def reset_password(actor: Principal, user_id: int, reason: str) -> dict:
-    actor.require("admin.users", action="admin.user.reset_password")
+    _require_company_admin(actor, "admin.user.reset_password")
     if user_id == actor.user_id:
         raise Forbidden("Use 'Change password' for your own account.", action="admin.user.reset_password.self")
     row = _user_row(user_id)
@@ -219,7 +226,7 @@ def roles_catalog() -> list[dict]:
 
 def security_alerts(actor: Principal) -> list[dict]:
     """Rule-based security review flags for the Head Manager."""
-    actor.require("admin.users")
+    _require_company_admin(actor, "admin.users")
     alerts = []
     for r in t.sql("""
         SELECT lower(username) AS username, count(*) AS n, max(at) AS last_at FROM motion.login_attempt

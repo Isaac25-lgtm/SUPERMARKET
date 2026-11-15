@@ -45,18 +45,21 @@ def _bootstrap_worker() -> None:
         logger.exception("bootstrap failed")
         STATE.update(phase="failed", error=type(exc).__name__)
         return
-    if os.environ.get("MOTION_SEED_DEMO") == "1":
+    if get_settings().seed_demo:
         # TEST DATA history is generated while the system is already usable; it is
         # resumable (per-day phases) if the container restarts mid-way.
         from . import seed
 
-        try:
-            STATE["phase"] = "ready (seeding TEST DATA in background)"
-            seed.run(get_settings())
-            STATE["phase"] = "ready"
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("TEST DATA seed failed")
-            STATE.update(phase="ready (TEST DATA seed incomplete — see logs)", error=type(exc).__name__)
+        for attempt in range(1, 4):  # resumable: completed phases are skipped on retry
+            try:
+                STATE["phase"] = "ready (seeding TEST DATA in background)"
+                seed.run(get_settings())
+                STATE.update(phase="ready", error=None)
+                break
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("TEST DATA seed attempt %d failed", attempt)
+                STATE.update(phase="ready (TEST DATA seed incomplete — see logs)", error=type(exc).__name__)
+                time.sleep(60 * attempt)
 
 
 def create_app() -> FastAPI:

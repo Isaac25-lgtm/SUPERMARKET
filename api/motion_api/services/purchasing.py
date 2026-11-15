@@ -44,9 +44,11 @@ def _velocity(branch_id: int, product_ids: list[int], days: int = 14) -> dict[in
     return {r["product_id"]: common.qty(Decimal(r["q"]) / days) for r in rows}
 
 
-def requisition_evidence(branch_id: int, product_ids: list[int]) -> list[dict]:
-    """Server-computed evidence shown to approvers (never trusted from the client)."""
-    branches = common.branches()
+def requisition_evidence(branch_id: int, product_ids: list[int], actor: Principal | None = None) -> list[dict]:
+    """Server-computed evidence shown to approvers (never trusted from the client).
+
+    H1: other branches' stock is included only for branches the requester may see."""
+    branches = [b for b in common.branches() if actor is None or b["id"] == branch_id or actor.can_branch(b["id"])]
     on_hand = common.stock_on_hand([b["storage_location_id"] for b in branches], product_ids)
     vel = _velocity(branch_id, product_ids)
     names = common.product_names(set(product_ids))
@@ -89,7 +91,7 @@ def submit_requisition(actor: Principal, *, branch_id: int, supplier_id: int, li
                       "uom": items[pid]["uom"]})
     supplier = t.sql_one("SELECT name FROM party_party WHERE id=%s", (supplier_id,))["name"]
     payload = {"supplier_id": supplier_id, "supplier": supplier, "lines": clean,
-               "evidence": requisition_evidence(branch_id, pids)}
+               "evidence": requisition_evidence(branch_id, pids, actor)}
     return approvals.submit(actor, action_type="purchase_request", branch_id=branch_id, amount=amount,
                             title=f"Restock from {supplier} ({len(clean)} items)", payload=payload,
                             justification=justification, urgency=urgency)
@@ -237,7 +239,8 @@ def payables(actor: Principal, *, state: str | None = None) -> list[dict]:
                     WHERE i.type='in' AND (%s::text IS NULL OR i.state=%s) ORDER BY i.id DESC LIMIT 300""", (state, state))
     out = []
     for r in rows:
-        if r["branch_id"] and not actor.can_branch(r["branch_id"]):
+        # H1: unallocated bills are visible to head-office (all-branch) users only.
+        if (r["branch_id"] is None and not actor.all_branches) or (r["branch_id"] and not actor.can_branch(r["branch_id"])):
             continue
         r["total"] = common.money(r["total"]) if r["total"] is not None else None
         if r["state"] == "draft":
@@ -252,7 +255,7 @@ def invoice_detail(actor: Principal, invoice_id: int) -> dict:
     inv = Invoice(invoice_id)
     if inv.type != "in":
         raise NotFound("Supplier invoice not found.")
-    if inv.branch and not actor.can_branch(inv.branch.id):
+    if (inv.branch and not actor.can_branch(inv.branch.id)) or (not inv.branch and not actor.all_branches):
         raise Forbidden("Invoice belongs to another branch.", action="invoice.view", target_type="invoice", target_id=str(invoice_id))
     lines = []
     for ln in inv.lines:
@@ -279,10 +282,13 @@ def post_invoice(actor: Principal, invoice_id: int, *, supplier_reference: str, 
     actor.require("invoice.post", action="invoice.post")
     Invoice = t.model("account.invoice")
     inv = Invoice(invoice_id)
+    if not inv.branch:
+        if not actor.all_branches:
+            raise Forbidden("Unallocated bills can only be posted by head office.", action="invoice.post")
+    else:
+        actor.require_branch(inv.branch.id, action="invoice.post", target_type="invoice", target_id=invoice_id)
     if inv.type != "in" or inv.state != "draft":
         raise Conflict("Only draft supplier invoices can be posted.")
-    if inv.branch:
-        actor.require_branch(inv.branch.id, action="invoice.post")
     if not supplier_reference.strip():
         raise Invalid("Enter the supplier's invoice number.")
     detail = invoice_detail(actor, invoice_id)
@@ -305,6 +311,10 @@ def request_payment(actor: Principal, invoice_id: int, *, amount: Decimal, reaso
     actor.require("payment.request", action="payment.request")
     Invoice = t.model("account.invoice")
     inv = Invoice(invoice_id)
+    # H1: scope first, before revealing state or balance.
+    if not inv.branch:
+        raise Conflict("This bill is not allocated to a branch; allocate it before requesting payment.")
+    actor.require_branch(inv.branch.id, action="payment.request", target_type="invoice", target_id=invoice_id)
     if inv.type != "in" or inv.state != "posted":
         raise Conflict("Only posted, unpaid supplier invoices can be paid.")
     amount = common.money(amount)
@@ -314,7 +324,7 @@ def request_payment(actor: Principal, invoice_id: int, *, amount: Decimal, reaso
                            AND status IN ('pending','approved') AND (payload->>'invoice_id')::int=%s""", (invoice_id,))
     if pending:
         raise Conflict("A payment for this invoice is already awaiting approval or execution.")
-    branch_id = inv.branch.id if inv.branch else common.branch_ids()[0]
+    branch_id = inv.branch.id
     return approvals.submit(actor, action_type="supplier_payment", branch_id=branch_id, amount=amount,
                             title=f"Pay {inv.party.rec_name} - {inv.number}",
                             payload={"invoice_id": invoice_id, "invoice": inv.number, "supplier": inv.party.rec_name,
@@ -327,6 +337,7 @@ def record_payment(actor: Principal, request_id: int, *, method: str = "Bank tra
     # The requester may record the payment: the maker-checker control is the
     # approval chain, which the requester could not act on.
     req = approvals.require_approved(request_id, "supplier_payment")
+    actor.require_branch(req["branch_id"], action="payment.record", target_type="approval", target_id=req["ref"])
     Invoice = t.model("account.invoice")
     Method = t.model("account.invoice.payment.method")
     MoveLine = t.model("account.move.line")
@@ -377,6 +388,7 @@ def post_expense(actor: Principal, request_id: int, *, posting_date: dt.date | N
     """Turn an approved expense into a posted supplier bill (accrual)."""
     actor.require("invoice.post", action="expense.post")
     req = approvals.require_approved(request_id, "expense")
+    actor.require_branch(req["branch_id"], action="expense.post", target_type="approval", target_id=req["ref"])
     if req["initiator_id"] == actor.user_id:
         raise Forbidden("You cannot post an expense you submitted yourself.", action="expense.post.self",
                         target_type="approval", target_id=req["ref"])

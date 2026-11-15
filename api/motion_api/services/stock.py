@@ -352,6 +352,25 @@ def execute_writeoff(actor: Principal, approval_id: int) -> dict:
     p = req["payload"]
     pid, q = int(p["product_id"]), common.qty(p["quantity"])
     b = common.branch(req["branch_id"])
+    # C1/H4: re-validate at execution against server-owned records, under lock.
+    if p["source"] == "transit":
+        d = t.sql_one("SELECT * FROM motion.discrepancy WHERE id=%s FOR UPDATE", (int(p.get("discrepancy_id") or 0),))
+        if (not d or d["status"] != "pending_approval" or d["approval_id"] != req["id"] or d["product_id"] != pid
+                or common.qty(d["quantity"]) != q or d["branch_id"] != req["branch_id"]):
+            raise Conflict("The discrepancy no longer matches this approved write-off.")
+        transit = common.transit_location_id()
+        from .pos import _lock_guards
+        _lock_guards(transit, [pid])
+        if common.stock_on_hand([transit], [pid]).get((transit, pid), Decimal(0)) < q:
+            raise Conflict("Those units are no longer in transit.")
+    elif p.get("discrepancy_id"):
+        raise Conflict("Invalid write-off source.")
+    else:
+        from .pos import _lock_guards
+        _lock_guards(b["storage_location_id"], [pid])  # same guard as checkout
+        have = common.stock_on_hand([b["storage_location_id"]], [pid]).get((b["storage_location_id"], pid), Decimal(0))
+        if q > have:
+            raise Conflict(f"Only {have} on hand now; the write-off was approved for {q}.")
     from_loc = common.transit_location_id() if p["source"] == "transit" else b["storage_location_id"]
     Move = t.model("stock.move")
     with t.set_context(**common.tryton_context(b["id"])), t.transaction().set_user(actor.tryton_user_id or 0):

@@ -12,8 +12,9 @@ import {
   errorText, useToast,
 } from '../components/ui'
 import { dateTime, money, num, qty } from '../lib/format'
+import { barcodeCandidates, beep, listenForScanner } from '../lib/scanner'
 
-interface Item { id: number; name: string; sku: string | null; barcode: string | null; plu: string | null; category: string | null
+interface Item { id: number; name: string; sku: string | null; barcode: string | null; barcodes?: string[]; plu: string | null; category: string | null
   uom: string; sold_by_weight: boolean; price: string; vat: boolean; on_hand: string }
 interface Catalog { register: { id: number; name: string; branch_id: number }; items: Item[]; policy: { cashier_max_discount_pct: number; receipt_footer?: string } }
 interface Shift { id: number; register_id: number; register_name: string; branch_name: string; opened_at: string; opening_float: string
@@ -113,7 +114,7 @@ function Till({ shift }: { shift: Shift }) {
   const visible = useMemo(() => {
     const q = scan.trim().toLowerCase()
     return items.filter((i) => (category === 'all' || (i.category ?? 'Other') === category)
-      && (!q || i.name.toLowerCase().includes(q) || i.sku?.toLowerCase().includes(q) || i.barcode === q || i.plu === q)).slice(0, 60)
+      && (!q || i.name.toLowerCase().includes(q) || i.sku?.toLowerCase().includes(q) || (i.barcodes ?? []).includes(q) || i.plu === q)).slice(0, 60)
   }, [items, scan, category])
 
   const add = (item: Item, quantity = 1) => {
@@ -125,26 +126,41 @@ function Till({ shift }: { shift: Shift }) {
     })
   }
 
-  const onScan = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const code = scan.trim()
+  /** One path for every scan: search box Enter, or the page-wide scanner listener. */
+  const handleCode = async (raw: string, fromSearchBox: boolean) => {
+    const code = raw.trim()
     if (!code) return
-    const local = items.find((i) => i.barcode === code || i.plu === code || i.sku === code)
+    const forms = barcodeCandidates(code)
+    const local = items.find((i) => (i.barcodes ?? []).some((b) => forms.includes(b)) || i.plu === code || i.sku === code)
     if (local) {
+      beep(true)
       if (local.sold_by_weight) setWeighFor(local); else add(local)
       setScan('')
       return
     }
     try {
+      // Scale labels (price/weight embedded) and anything not in the cached catalog.
       const r = await api.get<{ id: number; scale?: { quantity?: string } | null }>('/api/catalog/lookup', { code })
       const item = items.find((i) => i.id === r.id)
-      if (item && r.scale?.quantity) add(item, num(r.scale.quantity))
-      else if (item) add(item)
+      if (!item) throw new Error(`${code} is not sold at this till.`)
+      beep(true)
+      if (r.scale?.quantity) add(item, num(r.scale.quantity)); else if (item.sold_by_weight) setWeighFor(item); else add(item)
       setScan('')
     } catch (err) {
-      if (visible.length === 1) { add(visible[0]); setScan('') } else if (!visible.length) toast('bad', errorText(err))
+      if (fromSearchBox && visible.length === 1 && !/^\d{6,}$/.test(code)) { beep(true); add(visible[0]); setScan(''); return }
+      beep(false)
+      if (!fromSearchBox || !visible.length || /^\d{6,}$/.test(code)) {
+        toast('bad', errorText(err))
+        setScan('')
+      }
     }
   }
+  const onScan = (e: React.FormEvent) => { e.preventDefault(); void handleCode(scan, true) }
+  const handleRef = useRef(handleCode)
+  handleRef.current = handleCode
+  // Scans work even when the cursor is not in the search box (e.g. after tapping the basket).
+  useEffect(() => listenForScanner((code) => { if (!payOpen && !weighFor && !overrideOpen) void handleRef.current(code, false) }),
+    [payOpen, weighFor, overrideOpen])
 
   const total = lines.reduce((s, l) => s + lineTotal(l), 0)
   const discount = lines.reduce((s, l) => s + Math.round(l.quantity * num(l.product.price)) - lineTotal(l), 0)

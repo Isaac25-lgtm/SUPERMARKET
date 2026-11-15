@@ -110,7 +110,8 @@ def meta(request: Request):
     s = get_settings()
     return MotionJSON({"brand": s.brand_name, "company": s.company_name, "currency": s.currency,
                        "timezone": s.timezone, "test_data": s.demo_mode, "ai_llm_enabled": s.ai_llm_enabled,
-                       "open_demo": s.open_demo})
+                       "open_demo": s.open_demo, "session_idle_minutes": s.session_idle_minutes,
+                       "deployment": s.deployment})
 
 
 @router.get("/branches")
@@ -282,8 +283,11 @@ def audit_search(request: Request, q: str | None = None, actor: int | None = Non
     def fn(p):
         params = _audit_params(p, q, actor, branch, action, outcome, target, min_amount, date_from, date_to, limit, offset)
         rows = t.sql(AUDIT_SQL, params)
-        actors = t.sql("SELECT id, username, full_name FROM motion.app_user ORDER BY full_name")
-        actions = [r["action"] for r in t.sql("SELECT DISTINCT action FROM motion.audit_event ORDER BY 1")]
+        scope = "(%(all_branches)s OR e.branch_id = ANY(%(branches)s) OR (e.branch_id IS NULL AND %(see_global)s))"
+        actors = t.sql(f"""SELECT DISTINCT u.id, u.username, u.full_name FROM motion.audit_event e
+                           JOIN motion.app_user u ON u.id = e.actor_id WHERE {scope} ORDER BY u.full_name""", params)
+        actions = [r["action"] for r in t.sql(
+            f"SELECT DISTINCT e.action FROM motion.audit_event e WHERE {scope} ORDER BY 1", params)]
         return {"events": rows, "actors": actors, "actions": actions}
     return MotionJSON(unit_of_work(request, fn))
 

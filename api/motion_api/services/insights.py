@@ -15,7 +15,7 @@ from decimal import Decimal
 
 from .. import tryton as t
 from ..audit import record
-from ..errors import Invalid
+from ..errors import Forbidden, Invalid
 from ..security import Principal, utcnow
 from . import catalog, common
 
@@ -80,8 +80,8 @@ def generate(actor: Principal, branch_id: int | None = None) -> list[dict]:
             # 3. Branch imbalance -> transfer suggestion
             if vel > 0 and stock / vel < 5:
                 for other in all_br:
-                    if other["id"] == b["id"]:
-                        continue
+                    if other["id"] == b["id"] or not actor.can_branch(other["id"]):
+                        continue  # H1: never reveal or suggest from branches outside scope
                     o_stock = on_hand.get((other["storage_location_id"], pid), ZERO)
                     o_vel = s14.get((other["id"], pid), ZERO) / 14
                     o_cover = (o_stock / o_vel) if o_vel else (Decimal(999) if o_stock > 0 else ZERO)
@@ -208,6 +208,10 @@ def acknowledge(actor: Principal, key: str, status: str, note: str | None) -> No
     actor.require("insights.view", action="insights.ack")
     if status not in {"acknowledged", "dismissed"}:
         raise Invalid("Unknown status.")
+    # H1: only insights the actor can currently see (i.e. within branch scope) can be resolved.
+    if key not in {i["key"] for i in generate(actor)}:
+        raise Forbidden("That insight is not in your branch scope.", action="insights.ack", target_type="insight",
+                        target_id=key)
     t.execute("""INSERT INTO motion.insight_ack (insight_key, status, note, by_user) VALUES (%s,%s,%s,%s)
                  ON CONFLICT (insight_key) DO UPDATE SET status=EXCLUDED.status, note=EXCLUDED.note, by_user=EXCLUDED.by_user, at=now()""",
               (key, status, note, actor.user_id))

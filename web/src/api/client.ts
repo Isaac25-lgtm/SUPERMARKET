@@ -58,7 +58,9 @@ async function request<T>(method: string, path: string, body?: unknown, query?: 
   const data = text ? safeJson(text) : null
   if (!res.ok) {
     const err = (data ?? {}) as { error?: string; message?: string; details?: Record<string, unknown> }
-    if (res.status === 401 && onUnauthenticated && !path.endsWith('/auth/login')) onUnauthenticated()
+    // A 401 from the identity/sign-in endpoints is an answer, not an expired session.
+    const authProbe = /\/api\/auth\/(me|login|demo-login|demo-accounts)$/.test(path)
+    if (res.status === 401 && onUnauthenticated && !authProbe) onUnauthenticated()
     throw new ApiError(res.status, err.error ?? 'error', err.message ?? `Request failed (${res.status})`, err.details)
   }
   return data as T

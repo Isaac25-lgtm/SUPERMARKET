@@ -9,7 +9,7 @@ export interface Me {
   all_branches: boolean; branch_ids: number[]; must_change_password: boolean
   branches: Branch[]; registers: Register[]
 }
-export interface Meta { brand: string; company: string; currency: string; timezone: string; test_data: boolean; ai_llm_enabled: boolean; open_demo?: boolean }
+export interface Meta { brand: string; company: string; currency: string; timezone: string; test_data: boolean; ai_llm_enabled: boolean; open_demo?: boolean; session_idle_minutes?: number; deployment?: string }
 
 interface AuthState {
   me: Me | null
@@ -20,7 +20,7 @@ interface AuthState {
   branchId: number | null
   setBranchId: (id: number | null) => void
   refresh: () => Promise<void>
-  logout: () => Promise<void>
+  logout: (reason?: string) => Promise<void>
 }
 
 const Ctx = createContext<AuthState | null>(null)
@@ -53,7 +53,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const me = meQ.data ?? null
 
   useEffect(() => {
-    setUnauthenticatedHandler(() => qc.setQueryData(['me'], null))
+    // Session ended server-side (sign-out elsewhere, suspension, expiry): reset all client state.
+    setUnauthenticatedHandler(() => {
+      // Never wipe the cache on the sign-in page: an in-flight identity check would be orphaned.
+      if (window.location.pathname.startsWith('/login')) return
+      qc.clear()
+      window.location.assign('/login')
+    })
   }, [qc])
 
   useEffect(() => {
@@ -79,10 +85,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     branchId,
     setBranchId,
     refresh: async () => { await qc.invalidateQueries({ queryKey: ['me'] }) },
-    logout: async () => {
-      try { await api.post('/api/auth/logout') } finally {
+    logout: async (reason?: string) => {
+      try { await api.post('/api/auth/logout') } catch { /* already signed out server-side */ } finally {
+        // Full reload into the sign-in page: no cached screen or query survives sign-out.
         qc.clear()
-        qc.setQueryData(['me'], null)
+        window.location.assign(reason ? `/login?reason=${encodeURIComponent(reason)}` : '/login')
       }
     },
   }), [me, meta.data, meQ.isLoading, branchId, setBranchId, qc])

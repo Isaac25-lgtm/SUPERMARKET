@@ -33,6 +33,7 @@ from . import catalog, common, pos
 def register_device(actor: Principal, *, branch_id: int, name: str) -> dict:
     actor.require("sync.devices", action="sync.device.register")
     common.branch(branch_id)
+    actor.require_branch(branch_id, action="sync.device.register")
     token = "edge_" + secrets.token_urlsafe(32)
     row = t.sql_one("""INSERT INTO motion.edge_device (branch_id, name, token_hash, created_by) VALUES (%s,%s,%s,%s)
                        RETURNING id, branch_id, name, created_at""", (branch_id, name.strip(), sha256(token), actor.user_id))
@@ -43,6 +44,10 @@ def register_device(actor: Principal, *, branch_id: int, name: str) -> dict:
 
 def revoke_device(actor: Principal, device_id: int, reason: str) -> None:
     actor.require("sync.devices", action="sync.device.revoke")
+    dev = t.sql_one("SELECT branch_id FROM motion.edge_device WHERE id=%s", (device_id,))
+    if not dev:
+        raise NotFound("Device not found.")
+    actor.require_branch(dev["branch_id"], action="sync.device.revoke", target_type="edge_device", target_id=device_id)
     n = t.execute("UPDATE motion.edge_device SET revoked_at=now() WHERE id=%s AND revoked_at IS NULL", (device_id,))
     if not n:
         raise NotFound("Device not found or already revoked.")
@@ -55,7 +60,7 @@ def list_devices(actor: Principal) -> list[dict]:
                            (SELECT count(*) FROM motion.sync_inbox i WHERE i.edge_device_id=d.id) AS events,
                            (SELECT count(*) FROM motion.sync_inbox i WHERE i.edge_device_id=d.id AND i.status='posted_with_conflict') AS conflicts
                     FROM motion.edge_device d JOIN motion_branch b ON b.id=d.branch_id ORDER BY d.id""")
-    return [r for r in rows if actor.can_branch(r["branch_id"]) or actor.has("sync.devices")]
+    return [r for r in rows if actor.can_branch(r["branch_id"])]
 
 
 def authenticate_device(token: str | None) -> dict:
@@ -84,7 +89,7 @@ def snapshot(device: dict) -> dict:
     return {
         "branch": {"id": b["id"], "code": b["code"], "name": b["name"]},
         "registers": common.registers(b["id"]),
-        "items": [{"id": i["id"], "name": i["name"], "barcode": i["barcode"], "plu": i["plu"], "sku": i["sku"],
+        "items": [{"id": i["id"], "name": i["name"], "barcode": i["barcode"], "barcodes": i["barcodes"], "plu": i["plu"], "sku": i["sku"],
                    "uom": i["uom"], "sold_by_weight": i["sold_by_weight"], "price": i["shelf_price"], "vat": i["vat"],
                    "category": i["category"], "on_hand": stock.get((b["storage_location_id"], i["id"]), Decimal(0))}
                   for i in items if i["salable"] and i["shelf_price"] is not None],
@@ -169,4 +174,5 @@ def sync_status(actor: Principal) -> dict:
     return {"devices": list_devices(actor),
             "recent": t.sql("""SELECT i.event_id, i.received_at, i.status, i.result->>'central_number' AS number, d.name AS device
                                FROM motion.sync_inbox i JOIN motion.edge_device d ON d.id=i.edge_device_id
-                               ORDER BY i.id DESC LIMIT 50""")}
+                               WHERE (%s OR d.branch_id = ANY(%s))
+                               ORDER BY i.id DESC LIMIT 50""", (actor.all_branches, sorted(actor.branch_ids)))}

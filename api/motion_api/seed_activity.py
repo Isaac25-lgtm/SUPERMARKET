@@ -73,9 +73,11 @@ def _sell(cashier, register, basket, rng, day) -> dict | None:
         return None
 
 
-def _day(day: dt.date, offset: int, items, weights, rng: random.Random, *, keep_open: bool) -> None:
+def _day(day: dt.date, offset: int, items, weights, rng: random.Random, *, keep_open: bool, only: int | None = None) -> None:
     tz = common.local_tz()
     for reg in common.registers():
+        if only is not None and reg["id"] != only:
+            continue
         cashier = principal(REGISTER_CASHIER[reg["name"]])
         if pos.my_open_shift(cashier):
             continue
@@ -111,18 +113,27 @@ def pos_history() -> None:
     velocity = {p[0]: p[8] for p in PRODUCTS}
     items = [i for i in items_all if velocity.get(i["name"], 1) > 0]
     weights = [velocity.get(i["name"], 1) for i in items]
+    registers = t.run(common.registers, readonly=True)
     for offset in range(HISTORY_DAYS, -1, -1):
         day = today - dt.timedelta(days=offset)
         key = f"pos_day_{day.isoformat()}"
+        day_seed = rng.random()
         if t.run(lambda k=key: _phase_done(k), readonly=True):
             continue
+        # One short transaction per register-day keeps locks brief while real users work.
+        for reg in registers:
+            rkey = f"{key}_{reg['id']}"
+            if t.run(lambda k=rkey: _phase_done(k), readonly=True):
+                continue
 
-        def work(day=day, key=key, offset=offset):
-            pos._DEFERRED.clear()  # a lock-escalation restart re-runs the whole day
-            with t.set_context(**common.tryton_context()):
-                _day(day, offset, items, weights, random.Random(rng.random()), keep_open=(offset == 0))
-            _mark(key)
-        t.run(work, user=0, op_key="seed.pos_day")
+            def work(day=day, rkey=rkey, offset=offset, reg=reg):
+                pos._DEFERRED.clear()  # a lock-escalation restart re-runs this unit
+                with t.set_context(**common.tryton_context()):
+                    _day(day, offset, items, weights, random.Random(day_seed + reg["id"]), keep_open=(offset == 0),
+                         only=reg["id"])
+                _mark(rkey)
+            t.run(work, user=0, op_key="seed.pos_day", retries=20)
+        t.run(lambda k=key: _mark(k), user=0)
         if offset % 10 == 0:
             logger.info("seeded POS day %s", day)
 

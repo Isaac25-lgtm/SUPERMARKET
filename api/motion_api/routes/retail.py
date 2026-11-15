@@ -78,6 +78,20 @@ class PriceIn(BaseModel):
     reason: str = Field(min_length=3, max_length=300)
 
 
+class BarcodeIn(BaseModel):
+    code: str = Field(min_length=1, max_length=40)
+
+
+@router.post("/catalog/products/{product_id}/barcodes")
+def add_barcode(product_id: int, body: BarcodeIn, request: Request):
+    return MotionJSON(unit_of_work(request, lambda p: catalog.add_barcode(p, product_id, body.code)), status_code=201)
+
+
+@router.post("/catalog/products/{product_id}/barcodes/remove")
+def remove_barcode(product_id: int, body: BarcodeIn, request: Request):
+    return MotionJSON(unit_of_work(request, lambda p: catalog.remove_barcode(p, product_id, body.code)))
+
+
 @router.post("/catalog/products/{product_id}/price")
 def change_price(product_id: int, body: PriceIn, request: Request):
     return MotionJSON(unit_of_work(request, lambda p: catalog.change_price(p, product_id, new_price=body.new_price,

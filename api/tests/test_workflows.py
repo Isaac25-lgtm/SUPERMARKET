@@ -136,9 +136,10 @@ def test_rejection_and_return_need_reasons(login, ids):
     ops = login("ops.david")
     assert ops.post(f"/api/approvals/{r['id']}/decision", {"decision": "reject"}).status_code == 422
     assert ops.post(f"/api/approvals/{r['id']}/decision", {"decision": "return", "comment": "Use transfer"}).status_code == 200
-    # Initiator resubmits a corrected version; chain restarts at step 1 with a new revision.
+    # C1: generic resubmission is disabled; the requester cancels and raises a corrected request.
     rs = login("inv.ruth").post(f"/api/approvals/{r['id']}/resubmit", {"payload": r["payload"], "amount": "5000", "justification": "Reduced"})
-    assert rs.status_code == 200 and rs.json()["revision"] == 2 and rs.json()["current_step"] == 0
+    assert rs.status_code == 409
+    assert login("inv.ruth").post(f"/api/approvals/{r['id']}/cancel", {"reason": "Will resubmit corrected"}).status_code == 200
 
 
 def test_expense_accrual_then_payment(login, ids):

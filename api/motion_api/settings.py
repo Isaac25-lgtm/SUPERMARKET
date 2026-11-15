@@ -85,6 +85,8 @@ class Settings:
     login_lock_minutes: int
     offline_grant_hours: int
     open_demo: bool = False
+    seed_demo: bool = False
+    deployment: str = "client"
     allowed_hosts: list[str] = field(default_factory=list)
 
     @property
@@ -108,14 +110,26 @@ def get_settings() -> Settings:
         raise RuntimeError("MOTION_SECRET_KEY (>=32 chars) is required in production")
     if not secret:
         secret = "dev-only-insecure-secret-key-change-me-0000"
+    # C2: a deployment is either an isolated synthetic "demo" or a "client" system.
+    # Every demo/seed switch defaults OFF, and a client deployment refuses to start
+    # if any is on. Local development defaults to "demo" so the test fixtures work.
+    deployment = os.environ.get("MOTION_DEPLOYMENT", "client" if env == "production" else "demo").strip().lower()
+    if deployment not in {"client", "demo"}:
+        raise RuntimeError("MOTION_DEPLOYMENT must be 'client' or 'demo'")
+    demo_mode = _bool("MOTION_DEMO_MODE", deployment == "demo" and env != "production")
+    open_demo = _bool("MOTION_OPEN_DEMO", False)
+    seed_demo = _bool("MOTION_SEED_DEMO", False)
+    if deployment == "client" and (demo_mode or open_demo or seed_demo):
+        raise RuntimeError("Refusing to start: MOTION_DEMO_MODE / MOTION_OPEN_DEMO / MOTION_SEED_DEMO must all be off "
+                           "on a client deployment (set MOTION_DEPLOYMENT=demo only on isolated synthetic systems)")
     return Settings(
         env=env,
         database=parse_database_url(url, _bool("MOTION_DB_PREFER_DIRECT", True)),
         secret_key=secret,
         session_ttl_minutes=int(os.environ.get("MOTION_SESSION_TTL_MINUTES", "720")),
-        session_idle_minutes=int(os.environ.get("MOTION_SESSION_IDLE_MINUTES", "120")),
+        session_idle_minutes=int(os.environ.get("MOTION_SESSION_IDLE_MINUTES", "5")),
         cookie_secure=_bool("MOTION_COOKIE_SECURE", env == "production"),
-        demo_mode=_bool("MOTION_DEMO_MODE", True),
+        demo_mode=demo_mode,
         brand_name=os.environ.get("MOTION_BRAND_NAME", "FreshWay Supermarkets"),
         company_name=os.environ.get("MOTION_COMPANY_NAME", "FreshWay Supermarkets Ltd (TEST)"),
         timezone=os.environ.get("MOTION_TIMEZONE", "Africa/Kampala"),
@@ -126,7 +140,8 @@ def get_settings() -> Settings:
         login_max_failures=int(os.environ.get("MOTION_LOGIN_MAX_FAILURES", "5")),
         login_lock_minutes=int(os.environ.get("MOTION_LOGIN_LOCK_MINUTES", "15")),
         offline_grant_hours=int(os.environ.get("MOTION_OFFLINE_GRANT_HOURS", "12")),
-        # Password-less "continue as" sign-in for TEST DATA demos only. Refused unless
-        # demo mode (TEST DATA banner) is also on, so it cannot guard real data.
-        open_demo=_bool("MOTION_OPEN_DEMO", False) and _bool("MOTION_DEMO_MODE", True),
+        # Password-less "continue as" sign-in: only on a demo deployment with the TEST DATA banner.
+        open_demo=open_demo and demo_mode and deployment == "demo",
+        seed_demo=seed_demo and deployment == "demo",
+        deployment=deployment,
     )

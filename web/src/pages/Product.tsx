@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { useAuth } from '../auth/auth'
 import { Badge, Button, Card, CardHeader, Empty, ErrorBox, Field, Input, Kpi, LoadingBlock, PageHeader, StatusChip, Table, Td, Th, useToast } from '../components/ui'
 import { date, dateTime, humanize, money, num, qty } from '../lib/format'
+import { beep, gtinValid } from '../lib/scanner'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type R = Record<string, any>
@@ -49,6 +50,7 @@ export default function ProductPage() {
           ) : <Empty title="No movements in this period" />}
         </Card>
         <div className="space-y-5">
+          <BarcodesCard productId={Number(id)} barcodes={(d.barcodes as string[]) ?? []} plu={d.plu} canEdit={can('catalog.manage')} />
           {can('catalog.price') && (
             <Card className="p-5">
               <div className="text-[14px] font-semibold">Change shelf price</div>
@@ -83,5 +85,49 @@ export default function ProductPage() {
       )}
       <p className="mt-4 text-[12.5px] text-muted"><Link className="text-accent hover:underline" to="/stock">← Back to stock</Link></p>
     </div>
+  )
+}
+
+function BarcodesCard({ productId, barcodes, plu, canEdit }: { productId: number; barcodes: string[]; plu: string | null; canEdit: boolean }) {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const [code, setCode] = useState('')
+  const refresh = () => qc.invalidateQueries({ queryKey: ['product', String(productId)] })
+  const addM = useMutation({
+    mutationFn: (c: string) => api.post(`/api/catalog/products/${productId}/barcodes`, { code: c }),
+    onSuccess: () => { beep(true); toast('good', 'Barcode registered. It scans at every till now.'); setCode(''); refresh() },
+    onError: () => beep(false),
+  })
+  const removeM = useMutation({
+    mutationFn: (c: string) => api.post(`/api/catalog/products/${productId}/barcodes/remove`, { code: c }),
+    onSuccess: () => { toast('good', 'Barcode removed.'); refresh() },
+  })
+  const typed = code.replace(/\s+/g, '')
+  const looksGtin = /^\d{8}$|^\d{12,14}$/.test(typed)
+  return (
+    <Card>
+      <CardHeader title="Barcodes" subtitle="Codes printed on the packaging. A product can have several (e.g. single and crate)." />
+      <div className="space-y-3 px-5 py-4">
+        {barcodes.length ? (
+          <ul className="space-y-1.5">
+            {barcodes.map((b) => (
+              <li key={b} className="flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-3 py-2">
+                <span className="font-mono text-[13px] tracking-wide">{b}</span>
+                {canEdit && <Button size="sm" variant="ghost" loading={removeM.isPending && removeM.variables === b} onClick={() => removeM.mutate(b)}>Remove</Button>}
+              </li>
+            ))}
+          </ul>
+        ) : <p className="text-[13px] text-muted">{plu ? `No package barcode — sold by weight with PLU ${plu} or scale labels.` : 'No barcode registered yet, so this product cannot be scanned at the till.'}</p>}
+        {canEdit && (
+          <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); if (typed) addM.mutate(typed) }}>
+            <Field label="Add a barcode" htmlFor="bc" hint={typed && looksGtin && !gtinValid(typed) ? 'Check digit looks wrong — rescan the item.' : 'Click here, then scan the item with the barcode reader (or type the digits and press Enter).'}>
+              <Input id="bc" inputMode="numeric" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Scan now…" />
+            </Field>
+            <ErrorBox error={addM.error ?? removeM.error} />
+            <Button type="submit" variant="primary" size="sm" loading={addM.isPending} disabled={!typed}>Register barcode</Button>
+          </form>
+        )}
+      </div>
+    </Card>
   )
 }

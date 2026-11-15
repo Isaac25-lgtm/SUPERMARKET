@@ -140,9 +140,10 @@ def seed_users() -> None:
         tu, emp = _tryton_identity(full_name, username)
         all_b = branch_codes == "*"
         row = t.sql_one("""INSERT INTO motion.app_user (username, full_name, password_hash, all_branches,
-                           must_change_password, tryton_user_id, tryton_employee_id, created_by)
-                           VALUES (%s,%s,%s,%s,false,%s,%s,%s) RETURNING id""",
-                        (username, full_name, hash_password(demo_password(username)), all_b, tu, emp, owner_id))
+                           must_change_password, tryton_user_id, tryton_employee_id, created_by, is_demo)
+                           VALUES (%s,%s,%s,%s,false,%s,%s,%s,true) RETURNING id""",
+                        (username, full_name, hash_password(demo_password(username)), all_b or "sysadmin" in roles,
+                         tu, emp, owner_id))
         owner_id = owner_id or row["id"]
         for r in roles:
             t.execute("INSERT INTO motion.user_role (user_id, role_code, granted_by) VALUES (%s,%s,%s)", (row["id"], r, owner_id))
@@ -222,6 +223,26 @@ def run(settings: Settings, activity: bool = True) -> None:
     if not os.environ.get("MOTION_SEED_PASSWORD_SECRET"):
         raise RuntimeError("Set MOTION_SEED_PASSWORD_SECRET to seed demo users")
     t.configure(settings)
+    # Only one seeder at a time: during a zero-downtime deploy the old and the new
+    # container both start seeding; the second waits for the first to stop.
+    import psycopg
+    import time as _time
+
+    guard = psycopg.connect(settings.database.url, autocommit=True)
+    deadline = _time.monotonic() + 1200
+    while not guard.execute("SELECT pg_try_advisory_lock(727002)").fetchone()[0]:
+        if _time.monotonic() > deadline:
+            guard.close()
+            raise RuntimeError("another TEST DATA seeder is still running")
+        logger.info("another seeder holds the lock; waiting ...")
+        _time.sleep(15)
+    try:
+        _seed_all(activity)
+    finally:
+        guard.close()  # releases the advisory lock
+
+
+def _seed_all(activity: bool) -> None:
     _phase("users", seed_users)
     _phase("catalog", seed_catalog)
     _phase("opening_stock", seed_opening_stock)
