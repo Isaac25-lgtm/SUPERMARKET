@@ -14,7 +14,7 @@ from .. import tryton as t
 from ..audit import record
 from ..errors import AppError, Invalid
 from ..security import Principal
-from ..services import approvals, catalog, dashboards, finance, insights, pos, purchasing, stock, sync
+from ..services import ai, approvals, catalog, dashboards, finance, insights, pos, purchasing, stock, sync
 from ..web import MotionJSON, unit_of_work
 
 router = APIRouter(prefix="/api")
@@ -485,6 +485,29 @@ def insight_ack(body: AckIn, request: Request):
 
 class AskIn(BaseModel):
     question: str = Field(min_length=3, max_length=300)
+
+
+class ChatTurn(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(max_length=4000)
+
+
+class ChatIn(BaseModel):
+    message: str = Field(min_length=2, max_length=1000)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=20)
+
+
+@router.get("/ai/status")
+def ai_status(request: Request):
+    return MotionJSON(unit_of_work(request, lambda p: ai.status(p)))
+
+
+@router.post("/ai/chat")
+def ai_chat(body: ChatIn, request: Request):
+    # Authenticate (+CSRF) in a short transaction; the provider call happens outside any
+    # database transaction and each tool opens its own short read-only one.
+    principal = unit_of_work(request, lambda p: p)
+    return MotionJSON(ai.chat(principal, body.message, [h.model_dump() for h in body.history]))
 
 
 @router.post("/insights/ask")

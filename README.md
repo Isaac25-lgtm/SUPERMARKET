@@ -16,7 +16,7 @@ offline-capable branch tills, and evidence-linked business insights.
 | **API** | Python 3.12 · FastAPI · Pydantic |
 | **Web** | React 19 · TypeScript (strict) · Vite · Tailwind CSS 4 · TanStack Query · Recharts |
 | **Offline** | Branch-edge service (FastAPI + SQLite/WAL) with an immutable outbox |
-| **Tests** | 83 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 10 browser E2E (Playwright) |
+| **Tests** | 91 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 11 browser E2E (Playwright) |
 
 ---
 
@@ -103,11 +103,21 @@ offline-capable branch tills, and evidence-linked business insights.
 - An **append-only audit trail** with search, drill-down and CSV export (exports are themselves audited).
 - Security alerts for repeated failed logins, bursts of privilege changes, denied actions and refund frequency.
 
-**Motion Intelligence** (rule-based, `rules-v1`)
-- Flags: reorder needs, slow-moving and dead stock, near-expiry batches, branch-imbalance transfer suggestions,
-  cashier review flags, data-quality issues, and a week-on-week summary.
-- Every insight shows its **evidence and data window**.
-- "Ask Motion" answers questions by deterministic routing over authorised data, with no LLM and no free-form SQL.
+**Ask Motion AI** (chat assistant, DeepSeek)
+- A chat page where managers ask in plain language: "How were sales this week?", "Which items may run out?",
+  "What was our gross margin by branch?", "Any food close to expiry?", "Which approvals are waiting for me?".
+- The model never touches the database. It can only call **ten read-only tools** (sales summary, P&L, daily trend,
+  product search, alerts, cash position, approvals, break-even, shift variances, branches). Each tool re-checks the
+  person's permission and branch scope, so a North branch manager asking about Central gets "not assigned to this
+  branch", not the figures.
+- Only aggregated business figures go to the provider. No passwords, sessions, customer data, cost prices or
+  per-cashier breakdowns are sent.
+- Every reply lists the tools and periods it used. Every question is logged (`motion.ai_query`: tools, tokens,
+  latency, status) and audited (`ai.ask`). There is a per-user hourly limit (default 30).
+- If the provider is off or fails, the deterministic rule-based answer is shown instead.
+- **Alerts** tab (rule-based, `rules-v1`): reorder needs, slow-moving and dead stock, near-expiry batches,
+  branch-imbalance transfer suggestions, cashier review flags, data-quality issues and a week-on-week summary, each
+  with its **evidence and data window**.
 - AI never posts, approves, transfers, re-prices or refunds anything.
 
 ---
@@ -232,6 +242,8 @@ Environment variables, set in the Render dashboard and **never in Git**:
 | `MOTION_SEED_PASSWORD_SECRET` | Derives the UAT account passwords (see below) |
 | `MOTION_DEPLOYMENT` | `client` (default in production) or `demo`. A **client** deployment refuses to start if any demo/seed switch is on. The live TEST site is `demo`. |
 | `MOTION_OPEN_DEMO=1` | **Open demo**: password-less account picker (grouped Managers / Accountants / Inventory / Cashiers). Only on `demo` deployments, only for accounts flagged as demo accounts; turning it off ends every demo session immediately. |
+| `DEEPSEEK_API_KEY` | Secret. The Ask Motion AI provider key (Render secret, never in code). |
+| `MOTION_AI_LLM_ENABLED=1` | Turns the AI chat on; it needs the key as well. Off means rule-based answers. Optional: `MOTION_AI_MODEL` (default `deepseek-flash`), `MOTION_AI_HOURLY_LIMIT` (default 30). |
 | `MOTION_SESSION_IDLE_MINUTES` | Automatic sign-out after inactivity (default **5**), enforced by both browser and server. |
 
 On start, the port binds immediately. Bootstrap runs in the background, and `/healthz` reports its phase. The app is
@@ -282,7 +294,7 @@ a transfer with a 100 → 95 shortfall, a cash shortage, an interrupted shift, a
 ## Testing
 
 ```bash
-MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 83 integration tests
+MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 91 integration tests
 .venv/Scripts/ruff check api branch-edge tryton-modules
 (cd web && npx tsc -b --noEmit && npm run build)
 
@@ -379,7 +391,7 @@ The full policy is in [docs/accounting-policy.md](docs/accounting-policy.md).
 
 ## Status
 
-**Working and tested** (83 integration tests + 10 browser E2E; deployed on Render):
+**Working and tested** (91 integration tests + 11 browser E2E; deployed on Render):
 - POS, shifts and refunds
 - Stock, transfers, write-offs and counts
 - The procurement → payment chain, and expenses
@@ -399,7 +411,9 @@ The full policy is in [docs/accounting-policy.md](docs/accounting-policy.md).
 - **Tax:** no income-tax model, so net profit is shown "before tax". No EFRIS/URA integration, and tax rates are
   illustrative.
 - **Payments:** mobile money and card are claims to reconcile manually; there are no provider integrations.
-- **LLM assistant:** "Ask Motion" is deterministic; an LLM adapter is not implemented. The flag stays off.
+- **AI assistant:** answers can still be wrong, so the page tells people to check figures in Reports. Query logs
+  have a 90-day retention policy that is documented but not yet automated. There is no streaming; replies arrive
+  whole, in about 5–10 s.
 - **MFA:** not implemented.
 - **Database role:** production should use a dedicated database role without owner rights, so the append-only
   triggers can't be disabled. The Neon owner role is used for now.

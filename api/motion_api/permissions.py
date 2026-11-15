@@ -77,7 +77,7 @@ PERMISSIONS: dict[str, str] = {
     "admin.policies": "Change approval thresholds and steps",
     "audit.view": "Search the audit trail",
     "audit.export": "Export audit trail (CSV)",
-    "insights.view": "View Motion Intelligence insights",
+    "insights.view": "Use Ask Motion AI and view its alerts",
     "sync.devices": "Register/revoke branch edge devices",
     "system.health": "View technical health",
 }

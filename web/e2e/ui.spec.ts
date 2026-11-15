@@ -98,3 +98,21 @@ test('logo returns to the dashboard and sign-out lands on the sign-in page', asy
   await page.goto('/dashboard')
   await expect(page).toHaveURL(/\/login/)
 })
+
+test('Ask Motion AI chat answers and the alerts tab renders', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await login(page, 'gm.grace')
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Ask Motion AI' }).click()
+  await expect(page.getByRole('heading', { name: 'Ask Motion AI' })).toBeVisible()
+  await page.getByLabel('Message Motion AI').fill('Which items may run out soon?')
+  await page.keyboard.press('Enter')
+  await expect(page.getByText('Which items may run out soon?')).toBeVisible()
+  await expect(page.getByText('Motion AI is checking the figures')).toHaveCount(0, { timeout: 60_000 })
+  await expect(page.getByText(/rule-based answer|AI-generated from your authorised data/)).toBeVisible()
+  await page.screenshot({ path: `${shots}/ask-motion-ai.png`, fullPage: true })
+  await page.getByRole('tab', { name: 'Alerts' }).click()
+  await expect(page).toHaveURL(/tab=alerts/)
+  await expect(page.getByLabel('Type')).toBeVisible()
+  expect(errors).toEqual([])
+})

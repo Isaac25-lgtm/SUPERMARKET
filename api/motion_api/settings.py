@@ -86,6 +86,10 @@ class Settings:
     offline_grant_hours: int
     open_demo: bool = False
     seed_demo: bool = False
+    ai_api_key: str = ""
+    ai_model: str = "deepseek-flash"
+    ai_base_url: str = "https://api.deepseek.com"
+    ai_hourly_limit: int = 30
     deployment: str = "client"
     allowed_hosts: list[str] = field(default_factory=list)
 
@@ -136,7 +140,13 @@ def get_settings() -> Settings:
         currency=os.environ.get("MOTION_CURRENCY", "UGX"),
         web_dist=Path(os.environ.get("MOTION_WEB_DIST", str(ROOT / "web" / "dist"))),
         tryton_maxconn=int(os.environ.get("MOTION_DB_MAXCONN", "8")),
-        ai_llm_enabled=_bool("MOTION_AI_LLM_ENABLED", False),
+        # Ask Motion AI (DeepSeek, OpenAI-compatible). Enabled only with a key; the key
+        # lives in the environment (Render secret), never in code or logs.
+        ai_llm_enabled=_bool("MOTION_AI_LLM_ENABLED", False) and bool(os.environ.get("DEEPSEEK_API_KEY")),
+        ai_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+        ai_model=os.environ.get("MOTION_AI_MODEL", "deepseek-flash"),
+        ai_base_url=os.environ.get("MOTION_AI_BASE_URL", "https://api.deepseek.com"),
+        ai_hourly_limit=int(os.environ.get("MOTION_AI_HOURLY_LIMIT", "30")),
         login_max_failures=int(os.environ.get("MOTION_LOGIN_MAX_FAILURES", "5")),
         login_lock_minutes=int(os.environ.get("MOTION_LOGIN_LOCK_MINUTES", "15")),
         offline_grant_hours=int(os.environ.get("MOTION_OFFLINE_GRANT_HOURS", "12")),

@@ -54,9 +54,23 @@ The central system ingests each event in its own transaction, keyed by UUID (exa
 posting path. Cashier grants expire, which bounds how long a revoked account could keep selling offline.
 
 ## ADR-7 — AI is assistive
-Insights are rule-based (`rules-v1`), computed from read-only, branch-scoped data, with evidence attached. "Ask
-Motion" uses deterministic intent routing with no LLM and no model-authored SQL. Suggestions only link to draft
-forms, and every action still goes through the normal approval workflow.
+Alerts are rule-based (`rules-v1`), computed from read-only, branch-scoped data, with evidence attached.
+
+**Ask Motion AI** (`services/ai.py`, `POST /api/ai/chat`) is a tool-calling loop against DeepSeek's
+OpenAI-compatible API:
+
+1. The request is authenticated and CSRF-checked in a short transaction. The provider call then happens outside
+   any database transaction.
+2. The model sees only a system prompt (brand, date, the user's roles and visible branches, grounding rules) and
+   ten read-only tool definitions. No SQL and no write tools exist.
+3. Each tool call runs in its own read-only transaction, through the same service functions and permission and
+   branch checks as the normal API. A denial goes back to the model as `{"error": ...}`.
+4. Results are trimmed to aggregates; per-cashier figures and cost prices are excluded. History is capped at
+   8 turns × 2,000 characters, with up to 5 tool rounds and a 45 s timeout.
+5. Each question is logged in `motion.ai_query` (question, tools, answer, model, tokens, latency, status), audited
+   as `ai.ask`, and rate-limited per user per hour. If the provider fails, the rule-based answer is shown.
+
+Suggestions only link to draft forms, and every action still goes through the normal approval workflow.
 
 ## Request flow (checkout)
 ```text

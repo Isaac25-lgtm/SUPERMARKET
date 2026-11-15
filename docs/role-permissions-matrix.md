@@ -56,7 +56,7 @@ Every permission is enforced server-side **and** combined with branch scope: a u
 | `admin.policies` — Change approval thresholds and steps | ✔ |  |  |  |  |  |  |  |
 | `audit.view` — Search the audit trail | ✔ |  |  |  |  |  |  |  |
 | `audit.export` — Export audit trail (CSV) | ✔ |  |  |  |  |  |  |  |
-| `insights.view` — View Motion Intelligence insights | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |  |  |
+| `insights.view` — Use Ask Motion AI and view its alerts | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |  |  |
 | `sync.devices` — Register/revoke branch edge devices |  |  |  |  |  |  |  | ✔ |
 | `system.health` — View technical health |  |  |  |  |  |  |  | ✔ |
 
@@ -80,4 +80,3 @@ Every permission is enforced server-side **and** combined with branch scope: a u
 - Amount bands select the policy; an approver must hold the step's role (or an unexpired, audited delegation of it) **and** branch scope over the request's branch.
 - Users cannot grant roles to themselves, change their own status or branch scope.
 - Audit events are append-only (database trigger rejects UPDATE/DELETE/TRUNCATE).
-

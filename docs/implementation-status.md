@@ -38,7 +38,7 @@ Legend: ✅ working & covered by automated tests · ☑️ working, verified man
 | Break-even, capital recovery | ✅ | |
 | Period close UI, opening-balance / historical import | ❌ | Tryton supports period closing; no UI here |
 | Rule-based insights, ask-Motion (deterministic) | ✅ | |
-| LLM assistant | ❌ | intentionally off; no adapter shipped |
+| Ask Motion AI chat (DeepSeek) | ✅ | read-only scoped tools, logged + audited, rate-limited, rule-based fallback; `test_ai.py` (provider mocked) |
 | CSV exports (P&L, stock, shifts, audit) | ✅ | PDF export not implemented |
 
 ## Offline

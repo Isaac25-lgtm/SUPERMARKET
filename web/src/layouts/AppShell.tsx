@@ -49,7 +49,7 @@ export function AppShell() {
       { to: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard />, show: (c) => c('dashboard.branch') || c('dashboard.consolidated') },
       { to: '/pos', label: 'Point of sale', icon: <ScanBarcode />, show: (c) => c('pos.sell') },
       { to: '/approvals', label: 'Approvals', icon: <ClipboardCheck />, show: (c) => c('approvals.inbox'), badge: inbox.data?.actionable.length },
-      { to: '/insights', label: 'Motion Intelligence', icon: <Sparkles />, show: (c) => c('insights.view') },
+      { to: '/insights', label: 'Ask Motion AI', icon: <Sparkles />, show: (c) => c('insights.view') },
     ] },
     { section: 'Operations', items: [
       { to: '/sales', label: 'Sales & receipts', icon: <ReceiptText />, show: (c) => c('pos.history.branch') || c('pos.history.own') },

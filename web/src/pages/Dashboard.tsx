@@ -144,12 +144,12 @@ function Exceptions({ d }: { d: Dash }) {
   )
 }
 
-function InsightList({ items, title = 'Motion Intelligence' }: { items?: Dash[]; title?: string }) {
+function InsightList({ items, title = 'Motion AI alerts' }: { items?: Dash[]; title?: string }) {
   if (!items) return null
   return (
     <Card>
       <CardHeader title={title} subtitle="Rule-based review flags with evidence" icon={<Sparkles className="size-4" />}
-        action={<Link to="/insights" className="text-[13px] font-medium text-accent hover:underline">All insights</Link>} />
+        action={<Link to="/insights?tab=alerts" className="text-[13px] font-medium text-accent hover:underline">All alerts</Link>} />
       {items.length ? (
         <ul className="divide-y divide-line">
           {items.map((i) => (

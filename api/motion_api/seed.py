@@ -253,4 +253,17 @@ def _seed_all(activity: bool) -> None:
     from . import seed_activity
 
     seed_activity.run()
+    t.run(seed_spread_sale_times, user=0)
     logger.info("TEST DATA seed complete")
+
+
+def seed_spread_sale_times() -> None:
+    """Generated sales are inserted in bulk, so ``posted_at`` is the time the seeder ran.
+    Spread them deterministically over trading hours (08:00-21:00 Kampala, busier
+    later in the day) on their own sale date. Only touches seeder rows ('seed-' keys);
+    re-running is harmless."""
+    t.execute("""UPDATE motion.pos_sale
+                 SET posted_at = ((sale_date + time '08:00'
+                                   + make_interval(secs => floor(46800 * sqrt(mod(id * 7919, 1000) / 1000.0))))
+                                  AT TIME ZONE 'Africa/Kampala')
+                 WHERE idempotency_key LIKE 'seed-%'""")
