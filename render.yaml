@@ -1,0 +1,34 @@
+# Render Blueprint — one Docker web service. The database is Neon (external),
+# supplied as the DATABASE_URL secret. Never put secrets in this file.
+services:
+  - type: web
+    name: motion-supermarket
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: ohio            # Neon project is in AWS us-east-2 (Ohio): keep latency ~1-2 ms
+    plan: starter           # 512 MB RAM, always on. "free" works for demos but sleeps after 15 min idle
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false         # set in the Render dashboard: Neon connection string
+      - key: MOTION_SECRET_KEY
+        generateValue: true
+      - key: MOTION_SEED_PASSWORD_SECRET
+        sync: false         # only needed for TEST DATA seeding; keep a copy to derive UAT passwords
+      - key: MOTION_AUTO_BOOTSTRAP
+        value: "1"
+      - key: MOTION_SEED_DEMO
+        value: "1"          # set to "0" for a real client database
+      - key: MOTION_DEMO_MODE
+        value: "1"          # shows the TEST DATA banner
+      - key: MOTION_DB_PREFER_DIRECT
+        value: "1"          # use Neon's direct endpoint, not the -pooler host
+      - key: MOTION_DB_MAXCONN
+        value: "6"
+      - key: MOTION_BRAND_NAME
+        value: FreshWay Supermarkets
+      - key: MOTION_COMPANY_NAME
+        value: FreshWay Supermarkets Ltd (TEST)
+      - key: MOTION_TIMEZONE
+        value: Africa/Kampala

@@ -1,0 +1,168 @@
+"""Transfers, write-offs, procurement chain, payments, expenses and approval rules."""
+from __future__ import annotations
+
+from decimal import Decimal
+
+from conftest import account_balance, on_hand, pid, q, q1
+
+D = Decimal
+
+
+def _approve(login, req_id, *users):
+    for u in users:
+        r = login(u).post(f"/api/approvals/{req_id}/decision", {"decision": "approve", "comment": "ok"})
+        assert r.status_code == 200, (u, r.text)
+
+
+def test_transfer_100_dispatched_95_received(login, ids):
+    water = pid(ids, "Drinking water 500ml")
+    cen, nth = ids["storage"]["CEN"], ids["storage"]["NTH"]
+    from motion_api.services import common
+    from motion_api import tryton as t
+    transit = t.run(common.transit_location_id, readonly=True)
+    c0, n0, t0 = on_hand(cen, water), on_hand(nth, water), on_hand(transit, water)
+    revenue0 = account_balance("4.1.1.01")
+    moves0 = q1("SELECT count(*) AS n FROM account_move")["n"]
+    sarah, joseph = login("bm.sarah"), login("bm.joseph")
+    tr = sarah.post("/api/transfers", {"from_branch_id": ids["branch"]["CEN"], "to_branch_id": ids["branch"]["NTH"],
+                                       "lines": [{"product_id": water, "quantity": 100}], "reason": "Test transfer"}).json()
+    assert joseph.post(f"/api/transfers/{tr['id']}/dispatch").status_code == 409  # not approved yet
+    _approve(login, tr["approval_id"], "ops.david")
+    assert sarah.post(f"/api/transfers/{tr['id']}/dispatch").status_code == 403  # receiving branch cannot dispatch
+    assert joseph.post(f"/api/transfers/{tr['id']}/dispatch").status_code == 200
+    assert on_hand(cen, water) == c0 - 100 and on_hand(transit, water) == t0 + 100
+    r = sarah.post(f"/api/transfers/{tr['id']}/receive", {"lines": [{"product_id": water, "received_qty": 95}], "note": "5 missing"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "received_with_discrepancy"
+    assert on_hand(nth, water) == n0 + 95
+    assert on_hand(transit, water) == t0 + 5           # 5 unresolved, still visible in transit
+    assert on_hand(cen, water) + on_hand(nth, water) + on_hand(transit, water) == c0 + n0 + t0  # nothing vanished
+    assert account_balance("4.1.1.01") == revenue0       # no revenue from internal transfer
+    assert q1("SELECT count(*) AS n FROM account_move")["n"] == moves0  # internal moves create no journal entries
+    disc = q1("SELECT * FROM motion.discrepancy WHERE source_type='transfer' AND source_id=%s", (str(tr["id"]),))
+    assert disc["kind"] == "transfer_shortage" and D(disc["quantity"]) == 5
+    # Authorised write-off of the 5 units: transit -> lost & found, expensed as shrinkage (not COGS)
+    shrink0, cogs0 = account_balance("5.1.1.03"), account_balance("5.1.1.01")
+    wo = login("inv.ruth").post("/api/stock/writeoffs", {"branch_id": ids["branch"]["CEN"], "product_id": water, "quantity": 5,
+                                                         "reason": "Lost in transit, driver report filed", "discrepancy_id": disc["id"]}).json()
+    _approve(login, wo["id"], "ops.david")
+    assert login("inv.ruth").post(f"/api/stock/writeoffs/{wo['id']}/execute").status_code == 200
+    assert on_hand(transit, water) == t0
+    cost = D(q1("SELECT cost_price FROM product_cost_price WHERE product=%s", (water,))["cost_price"])
+    assert account_balance("5.1.1.03") - shrink0 == (5 * cost).quantize(D("1"))
+    assert account_balance("5.1.1.01") == cogs0
+    assert q1("SELECT status FROM motion.transfer WHERE id=%s", (tr["id"],))["status"] == "closed"
+
+
+def test_purchase_bands_route_to_right_approvers(login, ids):
+    inv = login("inv.ruth")
+    sup = q1("SELECT id FROM party_party WHERE name LIKE 'Kampala Wholesale%%'")["id"]
+    soda = pid(ids, "Soda 500ml")
+
+    def req(qty):
+        r = inv.post("/api/procurement/requisitions", {"branch_id": ids["branch"]["CEN"], "supplier_id": sup, "justification": "Band test",
+                                                       "lines": [{"product_id": soda, "quantity": qty, "unit_cost": "1000"}]})
+        assert r.status_code == 201, r.text
+        return r.json()
+    small, mid, big = req(100), req(500), req(1500)          # 100k, 500k, 1.5M
+    assert [s["role"] for s in small["steps"]] == ["operations_manager", "accountant"]
+    assert [s["role"] for s in mid["steps"]] == ["operations_manager", "accountant", "general_manager"]
+    assert [s["role"] for s in big["steps"]] == ["operations_manager", "accountant", "general_manager", "owner"]
+    # Order is enforced: GM cannot approve before operations and finance.
+    assert login("gm.grace").post(f"/api/approvals/{big['id']}/decision", {"decision": "approve"}).status_code == 403
+    _approve(login, big["id"], "ops.david", "acc.amina", "gm.grace")
+    # A branch manager forging a call cannot do the CFO step.
+    assert login("bm.joseph").post(f"/api/approvals/{big['id']}/decision", {"decision": "approve"}).status_code == 403
+    assert q1("SELECT status FROM motion.approval_request WHERE id=%s", (big["id"],))["status"] == "pending"
+    _approve(login, big["id"], "hm.owner")
+    assert q1("SELECT status FROM motion.approval_request WHERE id=%s", (big["id"],))["status"] == "approved"
+
+
+def test_same_person_cannot_approve_two_steps(login, ids):
+    owner = login("hm.owner")
+    # Give ops.david the accountant role too, then try to approve both steps.
+    uid = ids["user"]["ops.david"]
+    owner.put(f"/api/admin/users/{uid}/access", {"roles": ["operations_manager", "accountant"], "branch_ids": [], "all_branches": True,
+                                                "reason": "dual role test"})
+    sup = q1("SELECT id FROM party_party WHERE name LIKE 'Lakeside%%'")["id"]
+    r = login("inv.ruth").post("/api/procurement/requisitions", {"branch_id": ids["branch"]["NTH"], "supplier_id": sup,
+                               "justification": "Dual role test", "lines": [{"product_id": pid(ids, "Soda 500ml"), "quantity": 10}]}).json()
+    david = login("ops.david", fresh=True)
+    assert david.post(f"/api/approvals/{r['id']}/decision", {"decision": "approve"}).status_code == 200
+    second = david.post(f"/api/approvals/{r['id']}/decision", {"decision": "approve"})
+    assert second.status_code == 403 and "different person" in second.json()["message"]
+    owner.put(f"/api/admin/users/{uid}/access", {"roles": ["operations_manager"], "branch_ids": [], "all_branches": True, "reason": "restore"})
+
+
+def test_full_procurement_to_payment(login, ids):
+    inv, ops, acc = login("inv.ruth"), login("ops.david"), login("acc.amina")
+    sup = q1("SELECT id FROM party_party WHERE name LIKE 'Kampala Wholesale%%'")["id"]
+    sugar = pid(ids, "Sugar - brown")
+    stock0 = on_hand(ids["storage"]["STH"], sugar)
+    req = inv.post("/api/procurement/requisitions", {"branch_id": ids["branch"]["STH"], "supplier_id": sup, "justification": "Restock",
+                                                     "lines": [{"product_id": sugar, "quantity": 40, "unit_cost": "3700"}]}).json()
+    assert req["amount"] == "148000.00"
+    assert ops.post(f"/api/procurement/requisitions/{req['id']}/issue-po").status_code == 403  # not approved
+    _approve(login, req["id"], "ops.david", "acc.amina")
+    po = ops.post(f"/api/procurement/requisitions/{req['id']}/issue-po").json()
+    line = po["lines"][0]
+    # Partial delivery: 30 of 40, with a lot and expiry
+    po = inv.post(f"/api/procurement/orders/{po['id']}/receive", {"lines": [{"line_id": line["id"], "received_qty": 30, "lot_ref": "LOT-A",
+                                                                             "expiry_date": "2027-06-30"}], "note": "short 10"}).json()
+    assert on_hand(ids["storage"]["STH"], sugar) == stock0 + 30
+    assert D(po["lines"][0]["pending"]) == 10
+    assert q1("SELECT fulfilment_status FROM motion.approval_request WHERE id=%s", (req["id"],))["fulfilment_status"] == "partially_received"
+    invoice_id = po["invoices"][0]["id"]
+    detail = acc.get(f"/api/finance/invoices/{invoice_id}").json()
+    assert detail["three_way_match"] is True and D(detail["lines"][0]["quantity"]) == 30
+    payable0 = account_balance("2.1.1.01")
+    assert acc.post(f"/api/finance/invoices/{invoice_id}/post", {"supplier_reference": "KWF-T1", "invoice_date": "2026-11-15"}).status_code == 200
+    assert payable0 - account_balance("2.1.1.01") == D(111000)  # liability recognised: 30 x 3,700
+    # Payment is a separate approval; requester cannot approve it.
+    pay = acc.post(f"/api/finance/invoices/{invoice_id}/payment-request", {"amount": "111000", "reason": "Due"}).json()
+    assert acc.post(f"/api/finance/payments/{pay['id']}/record").status_code == 403
+    assert acc.post(f"/api/approvals/{pay['id']}/decision", {"decision": "approve"}).status_code == 403
+    _approve(login, pay["id"], "gm.grace")
+    bank0 = account_balance("1.1.1.03")
+    assert acc.post(f"/api/finance/payments/{pay['id']}/record").status_code == 200
+    assert bank0 - account_balance("1.1.1.03") == D(111000)
+    assert acc.get(f"/api/finance/invoices/{invoice_id}").json()["state"] == "paid"
+
+
+def test_rejection_and_return_need_reasons(login, ids):
+    sup = q1("SELECT id FROM party_party WHERE name LIKE 'Pearl%%'")["id"]
+    r = login("inv.ruth").post("/api/procurement/requisitions", {"branch_id": ids["branch"]["NTH"], "supplier_id": sup, "justification": "Need it",
+                               "lines": [{"product_id": pid(ids, "Bleach"), "quantity": 10}]}).json()
+    ops = login("ops.david")
+    assert ops.post(f"/api/approvals/{r['id']}/decision", {"decision": "reject"}).status_code == 422
+    assert ops.post(f"/api/approvals/{r['id']}/decision", {"decision": "return", "comment": "Use transfer"}).status_code == 200
+    # Initiator resubmits a corrected version; chain restarts at step 1 with a new revision.
+    rs = login("inv.ruth").post(f"/api/approvals/{r['id']}/resubmit", {"payload": r["payload"], "amount": "5000", "justification": "Reduced"})
+    assert rs.status_code == 200 and rs.json()["revision"] == 2 and rs.json()["current_step"] == 0
+
+
+def test_expense_accrual_then_payment(login, ids):
+    bm, acc = login("bm.moses"), login("acc.amina")
+    opex0 = account_balance("5.2.2.03", ids["branch"]["STH"])
+    e = bm.post("/api/finance/expenses", {"branch_id": ids["branch"]["STH"], "category": "utilities", "payee": "Power Test Co",
+                                          "amount": "250000", "description": "Electricity test", "incurred_on": "2026-11-10"}).json()
+    _approve(login, e["id"], "acc.amina", "gm.grace")
+    assert bm.post(f"/api/finance/expenses/{e['id']}/post").status_code == 403  # submitter cannot post
+    inv = acc.post(f"/api/finance/expenses/{e['id']}/post").json()
+    assert account_balance("5.2.2.03", ids["branch"]["STH"]) - opex0 == D(250000)  # expense recognised on posting (accrual)
+    assert inv["state"] == "posted" and D(inv["amount_to_pay"]) == D(250000)
+
+
+def test_unconfigured_amount_is_denied(login, ids):
+    owner = login("hm.owner")
+    pol = next(p for p in owner.get("/api/admin/policies").json()["policies"] if p["action_type"] == "transfer")
+    # Narrow the transfer policy to 0-10, so a larger transfer has no authority (default deny).
+    r = owner.put(f"/api/admin/policies/{pol['id']}", {"min_amount": "0", "max_amount": "10", "steps": pol["steps"], "reason": "Deny test band"})
+    assert r.status_code == 200
+    t = login("bm.sarah").post("/api/transfers", {"from_branch_id": ids["branch"]["CEN"], "to_branch_id": ids["branch"]["NTH"],
+                                                  "lines": [{"product_id": pid(ids, "Soda 500ml"), "quantity": 5}], "reason": "deny"})
+    assert t.status_code == 403 and "default deny" in t.json()["message"]
+    new_id = r.json()["id"]
+    owner.put(f"/api/admin/policies/{new_id}", {"min_amount": "0", "max_amount": None, "steps": pol["steps"], "reason": "Restore"})
+    ev = q("SELECT * FROM motion.audit_event WHERE action='admin.policy.change' ORDER BY id DESC LIMIT 2")
+    assert len(ev) == 2 and ev[0]["before_state"]["max"] == "10.00"

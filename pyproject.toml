@@ -1,0 +1,23 @@
+[project]
+name = "motion-supermarket-platform"
+version = "0.1.0"
+description = "Motion Imprints multi-branch supermarket operations platform (Tryton 8.0 LTS + FastAPI + React)"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+
+[tool.pytest.ini_options]
+testpaths = ["api/tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = ["ignore::DeprecationWarning", "ignore:Timezone must be set to UTC"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+extend-exclude = ["web", ".venv", "tryton-modules/motion_branch/motion_branch/view"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = ["S101", "S608", "B008", "E501", "UP017", "S311", "B904", "S105", "S106"]
+
+[tool.ruff.lint.per-file-ignores]
+"api/tests/*" = ["S", "B", "E402", "F401", "F811"]

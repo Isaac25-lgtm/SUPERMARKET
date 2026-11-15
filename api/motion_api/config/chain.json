@@ -1,0 +1,14 @@
+{
+  "_comment": "Chain layout used by setup_base. Edit for the real client (branch codes, registers). Re-running bootstrap adds missing branches/registers; it never deletes.",
+  "branches": [
+    {"code": "CEN", "name": "Central Branch", "registers": ["CEN-T1", "CEN-T2"]},
+    {"code": "NTH", "name": "North Branch", "registers": ["NTH-T1", "NTH-T2"]},
+    {"code": "STH", "name": "South Branch", "registers": ["STH-T1"]}
+  ],
+  "fiscal_years": [2026, 2027],
+  "example_approval_thresholds_ugx": {
+    "_comment": "EXAMPLE values for demo/UAT only — not client-approved limits. Changeable by the Head Manager in Administration > Approval policies (audited).",
+    "ops_limit": 200000,
+    "gm_limit": 1000000
+  }
+}

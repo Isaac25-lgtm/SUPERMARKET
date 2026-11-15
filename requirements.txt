@@ -1,0 +1,27 @@
+# Runtime dependencies (pinned; verified together in this repository's test run).
+# Tryton 8.0 LTS series — GPL-3.0-or-later (see docs/licences.md).
+trytond==8.0.14
+trytond_company==8.0.1
+trytond_currency==8.0.0
+trytond_country==8.0.0
+trytond_party==8.0.5
+trytond_product==8.0.2
+trytond_stock==8.0.5
+trytond_account==8.0.5
+trytond_account_product==8.0.1
+trytond_account_invoice==8.0.2
+trytond_account_invoice_stock==8.0.0
+trytond_account_stock_continental==8.0.0
+trytond_sale==8.0.5
+trytond_purchase==8.0.3
+trytond_sale_point==8.0.0
+python-sql==1.8.1
+psycopg[binary,pool]==3.3.9
+psycopg-pool==3.3.3
+fastapi==0.163.1
+starlette==1.10.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.3
+argon2-cffi==25.1.0
+httpx==0.28.1
+tzdata==2026.6

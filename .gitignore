@@ -1,0 +1,33 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+secrets/
+infra/dev-credentials*.txt
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# local disposable database cluster (dev/test only)
+infra/.pgdata/
+infra/.pglog/
+var/
+
+# node / web
+node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+e2e/test-results/
+e2e/playwright-report/
+
+# edge local stores
+branch-edge/data/
+*.sqlite3
+*.db

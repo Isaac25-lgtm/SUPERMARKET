@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "motion-tryton-branch"
+version = "8.0.0"
+description = "Motion Imprints: branch dimension for Tryton 8.0 ledgers, POS and stock"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.10"
+dependencies = [
+  "trytond~=8.0.14",
+  "trytond_account_stock_continental~=8.0.0",
+  "trytond_account_invoice~=8.0.0",
+  "trytond_purchase~=8.0.0",
+  "trytond_sale_point~=8.0.0",
+]
+
+[project.entry-points."trytond.modules"]
+motion_branch = "motion_branch"
+
+[tool.setuptools]
+packages = ["motion_branch"]
+
+[tool.setuptools.package-data]
+motion_branch = ["tryton.cfg", "*.xml", "view/*.xml"]
