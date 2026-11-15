@@ -5,7 +5,8 @@
 FROM node:24-bookworm-slim AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# Pin npm: the lockfile is generated with this version (newer npm versions are stricter about optional deps).
+RUN npm install -g npm@11.19.1 --no-audit --no-fund && npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 
