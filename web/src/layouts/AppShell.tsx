@@ -11,6 +11,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-do
 import { api } from '../api/client'
 import { ROLE_LABELS, primaryRole, useAuth } from '../auth/auth'
 import { useIdleLogout } from '../auth/useIdleLogout'
+import { AskMotionFloater } from '../components/MotionChat'
 import { TestDataBadge } from '../components/ui'
 
 interface NavItem { to: string; label: string; icon: ReactNode; show: (can: (p: string) => boolean) => boolean; badge?: number }
@@ -49,7 +50,7 @@ export function AppShell() {
       { to: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard />, show: (c) => c('dashboard.branch') || c('dashboard.consolidated') },
       { to: '/pos', label: 'Point of sale', icon: <ScanBarcode />, show: (c) => c('pos.sell') },
       { to: '/approvals', label: 'Approvals', icon: <ClipboardCheck />, show: (c) => c('approvals.inbox'), badge: inbox.data?.actionable.length },
-      { to: '/insights', label: 'Ask Motion AI', icon: <Sparkles />, show: (c) => c('insights.view') },
+      { to: '/insights', label: 'Alerts & insights', icon: <Sparkles />, show: (c) => c('insights.view') },
     ] },
     { section: 'Operations', items: [
       { to: '/sales', label: 'Sales & receipts', icon: <ReceiptText />, show: (c) => c('pos.history.branch') || c('pos.history.own') },
@@ -157,8 +158,9 @@ export function AppShell() {
           </Menu.Root>
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8"><Outlet /></div>
+          <div className="mx-auto w-full max-w-[1440px] px-4 pb-24 pt-6 sm:px-6 lg:px-8"><Outlet /></div>
         </main>
+        <AskMotionFloater />
       </div>
     </div>
   )

@@ -61,8 +61,10 @@ OpenAI-compatible API:
 
 1. The request is authenticated and CSRF-checked in a short transaction. The provider call then happens outside
    any database transaction.
-2. The model sees only a system prompt (brand, date, the user's roles and visible branches, grounding rules) and
-   ten read-only tool definitions. No SQL and no write tools exist.
+2. The model sees only a system prompt (brand, date, the user's roles, visible branches and the app sections they
+   may open, plus grounding rules) and the read-only tools **their role allows** (`TOOL_ACCESS`). No SQL and no
+   write tools exist. Each answer returns links to the sections behind it, filtered by the same route permissions
+   the UI enforces (`SECTIONS`).
 3. Each tool call runs in its own read-only transaction, through the same service functions and permission and
    branch checks as the normal API. A denial goes back to the model as `{"error": ...}`.
 4. Results are trimmed to aggregates; per-cashier figures and cost prices are excluded. History is capped at

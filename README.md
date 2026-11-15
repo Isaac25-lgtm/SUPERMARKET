@@ -16,7 +16,7 @@ offline-capable branch tills, and evidence-linked business insights.
 | **API** | Python 3.12 · FastAPI · Pydantic |
 | **Web** | React 19 · TypeScript (strict) · Vite · Tailwind CSS 4 · TanStack Query · Recharts |
 | **Offline** | Branch-edge service (FastAPI + SQLite/WAL) with an immutable outbox |
-| **Tests** | 91 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 11 browser E2E (Playwright) |
+| **Tests** | 94 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 11 browser E2E (Playwright) |
 
 ---
 
@@ -104,10 +104,16 @@ offline-capable branch tills, and evidence-linked business insights.
 - Security alerts for repeated failed logins, bursts of privilege changes, denied actions and refund frequency.
 
 **Ask Motion AI** (chat assistant, DeepSeek)
-- A chat page where managers ask in plain language: "How were sales this week?", "Which items may run out?",
-  "What was our gross margin by branch?", "Any food close to expiry?", "Which approvals are waiting for me?".
-- The model never touches the database. It can only call **ten read-only tools** (sales summary, P&L, daily trend,
-  product search, alerts, cash position, approvals, break-even, shift variances, branches). Each tool re-checks the
+- A floating **Ask Motion AI** button (bottom right of every back-office page) opens a chat. Managers ask in
+  plain language: "How were sales this week?", "Which items may run out?", "What was our gross margin by branch?",
+  "Any food close to expiry?", "Which approvals are waiting for me?".
+- **Answers follow each person's rights.** The model is offered only the tools their role allows, so an inventory
+  manager can't reach finance tools. It is told which branches and app sections they can open, and it explains
+  politely when something is outside their access.
+- **Every answer links to the section behind it** ("Open Profit & cash", "Open Stock & products", a product, an
+  approval), and only to pages that person can open.
+- The model never touches the database. It can only call **eleven read-only tools** (sales summary, P&L, daily trend,
+  product search, alerts, cash position, approvals, payables, break-even, shift variances, branches). Each tool re-checks the
   person's permission and branch scope, so a North branch manager asking about Central gets "not assigned to this
   branch", not the figures.
 - Only aggregated business figures go to the provider. No passwords, sessions, customer data, cost prices or
@@ -115,7 +121,7 @@ offline-capable branch tills, and evidence-linked business insights.
 - Every reply lists the tools and periods it used. Every question is logged (`motion.ai_query`: tools, tokens,
   latency, status) and audited (`ai.ask`). There is a per-user hourly limit (default 30).
 - If the provider is off or fails, the deterministic rule-based answer is shown instead.
-- **Alerts** tab (rule-based, `rules-v1`): reorder needs, slow-moving and dead stock, near-expiry batches,
+- **Alerts & insights** page (rule-based, `rules-v1`): reorder needs, slow-moving and dead stock, near-expiry batches,
   branch-imbalance transfer suggestions, cashier review flags, data-quality issues and a week-on-week summary, each
   with its **evidence and data window**.
 - AI never posts, approves, transfers, re-prices or refunds anything.
@@ -294,7 +300,7 @@ a transfer with a 100 → 95 shortfall, a cash shortage, an interrupted shift, a
 ## Testing
 
 ```bash
-MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 91 integration tests
+MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 94 integration tests
 .venv/Scripts/ruff check api branch-edge tryton-modules
 (cd web && npx tsc -b --noEmit && npm run build)
 
@@ -391,7 +397,7 @@ The full policy is in [docs/accounting-policy.md](docs/accounting-policy.md).
 
 ## Status
 
-**Working and tested** (91 integration tests + 11 browser E2E; deployed on Render):
+**Working and tested** (94 integration tests + 11 browser E2E; deployed on Render):
 - POS, shifts and refunds
 - Stock, transfers, write-offs and counts
 - The procurement → payment chain, and expenses

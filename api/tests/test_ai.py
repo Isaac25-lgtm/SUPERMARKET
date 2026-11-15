@@ -149,3 +149,41 @@ def test_history_is_bounded_and_text_only(provider, login):
     assert r.status_code == 200
     msgs = fake.requests[0]["messages"]
     assert len(msgs) == 1 + 8 + 1 and all(len(m["content"]) <= 2000 for m in msgs[1:])
+
+
+def offered(fake) -> set[str]:
+    return {t["function"]["name"] for t in fake.requests[0]["tools"]}
+
+
+def test_model_is_only_offered_tools_the_role_allows(provider, login):
+    fake = provider(["ok"])
+    ask(login("inv.ruth"), "what can you tell me?")
+    tools = offered(fake)
+    assert {"find_products", "get_stock_alerts", "get_pending_approvals"} <= tools
+    assert not tools & {"get_profit_and_loss", "get_cash_position", "get_payables", "get_break_even"}
+    system = fake.requests[0]["messages"][0]["content"]
+    assert "Stock & products" in system and "Profit & cash" not in system
+    fake = provider(["ok"])
+    ask(login("hm.owner"), "what can you tell me?")
+    assert {"get_profit_and_loss", "get_cash_position", "get_payables"} <= offered(fake)
+
+
+def test_answers_link_to_sections_the_user_can_open(provider, login):
+    fake = provider([[("get_profit_and_loss", {"period": "month"}), ("find_products", {"query": "sugar"})], "Here you go."])
+    body = ask(login("acc.amina"), "margin and sugar stock").json()
+    hrefs = [ln["href"] for ln in body["links"]]
+    assert "/finance" in hrefs and "/stock" in hrefs
+    assert any(h.startswith("/stock/products/") for h in hrefs)
+    assert fake.tool_messages()[1]["matches"], "fixture catalogue has sugar"
+    # A tool the role lacks yields neither data nor a link.
+    provider([[("get_cash_position", {})], "No access."])
+    body = ask(login("inv.ruth"), "cash?").json()
+    assert body["links"] == []
+    assert body["evidence"][0]["result"].startswith("error")
+
+
+def test_suggestions_follow_the_role(login):
+    ruth = login("inv.ruth").get("/api/ai/status").json()["suggestions"]
+    owner = login("hm.owner").get("/api/ai/status").json()["suggestions"]
+    assert not any("cash" in q.lower() or "margin" in q.lower() for q in ruth)
+    assert any("margin" in q for q in owner)

@@ -99,7 +99,7 @@ def tool_sales_trend(actor: Principal, days: int = 14, branch_code: str | None =
 
 def tool_find_products(actor: Principal, query: str, branch_code: str | None = None) -> dict:
     res = catalog.list_products(actor, branch_id=_branch_id(actor, branch_code), q=query[:60])
-    return {"matches": [{"name": i["name"], "shelf_price": i["shelf_price"], "unit": i["uom"],
+    return {"matches": [{"product_id": i["id"], "name": i["name"], "shelf_price": i["shelf_price"], "unit": i["uom"],
                          "sold_by_weight": i["sold_by_weight"], "stock_by_branch": i["stock"],
                          "reorder_point": i["reorder_point"], "low_at": i.get("low_at", [])}
                         for i in res["items"][:8]], "total_matches": len(res["items"])}
@@ -124,10 +124,15 @@ def tool_pending_approvals(actor: Principal) -> dict:
     box = approvals.inbox(actor)
 
     def brief(r):
-        return {"ref": r["ref"], "type": r["action_label"], "title": r["title"], "amount": r["amount"],
+        return {"approval_id": r["id"], "ref": r["ref"], "type": r["action_label"], "title": r["title"], "amount": r["amount"],
                 "branch": r["branch_name"], "status": r["status_label"], "overdue": r.get("overdue", False)}
     return {"waiting_for_you": [brief(r) for r in box["actionable"][:15]],
             "other_pending": [brief(r) for r in box["watching"][:10]]}
+
+
+def tool_payables(actor: Principal) -> dict:
+    p = finance.payables_summary(actor)
+    return {"supplier_bills_by_state": p["by_state"], "open_supplier_balance": p["supplier_balance"]}
 
 
 def tool_break_even(actor: Principal, period: str = "last30") -> dict:
@@ -169,6 +174,8 @@ TOOLS: dict[str, tuple[Any, str, dict]] = {
                           {"type": "object", "properties": {}}),
     "get_pending_approvals": (tool_pending_approvals, "Approval requests waiting for this user and other pending ones.",
                               {"type": "object", "properties": {}}),
+    "get_payables": (tool_payables, "Supplier bills by state and the open balance owed to suppliers.",
+                     {"type": "object", "properties": {}}),
     "get_break_even": (tool_break_even, "Operating break-even for a period with its assumptions.",
                        {"type": "object", "properties": {"period": {"type": "string", "enum": PERIODS}}}),
     "get_shift_variances": (tool_shift_variances, "Cashier shifts with cash over/short in the last 30 days.",
@@ -176,13 +183,79 @@ TOOLS: dict[str, tuple[Any, str, dict]] = {
 }
 
 
-def _tool_specs() -> list[dict]:
-    return [{"type": "function", "function": {"name": n, "description": d, "parameters": p}} for n, (_, d, p) in TOOLS.items()]
+# Which permission (any of) a tool needs, and the app section it links to. The model is
+# only offered tools the user's role allows; every tool re-checks scope anyway.
+TOOL_ACCESS: dict[str, tuple[tuple[str, ...], str | None]] = {
+    "list_branches": ((), None),
+    "get_sales_summary": (("finance.view", "dashboard.branch"), "/sales"),
+    "get_profit_and_loss": (("finance.view",), "/finance"),
+    "get_sales_trend": (("finance.view", "dashboard.branch"), "/dashboard"),
+    "find_products": (("catalog.view",), "/stock"),
+    "get_stock_alerts": (("insights.view",), "/insights"),
+    "get_cash_position": (("finance.view",), "/finance"),
+    "get_pending_approvals": (("approvals.inbox",), "/approvals"),
+    "get_payables": (("finance.view",), "/payables"),
+    "get_break_even": (("finance.view",), "/finance"),
+    "get_shift_variances": (("pos.shift.reconcile", "finance.view"), "/shifts"),
+}
+
+# App sections (mirrors the route guards in web/src/app/App.tsx).
+SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "/dashboard": ("Dashboard", ("dashboard.branch", "dashboard.consolidated")),
+    "/sales": ("Sales & receipts", ("pos.history.branch", "pos.history.own")),
+    "/shifts": ("Shifts & cash", ("pos.history.branch",)),
+    "/stock": ("Stock & products", ("stock.view",)),
+    "/transfers": ("Transfers", ("stock.view", "transfer.request")),
+    "/procurement": ("Procurement", ("procurement.request", "stock.receive")),
+    "/finance": ("Profit & cash", ("finance.view",)),
+    "/payables": ("Payables & expenses", ("finance.view", "expense.submit")),
+    "/reports": ("Reports", ("reports.export",)),
+    "/approvals": ("Approvals", ("approvals.inbox",)),
+    "/insights": ("Alerts & insights", ("insights.view",)),
+    "/audit": ("Audit trail", ("audit.view",)),
+}
+
+
+def _allowed(actor: Principal, perms: tuple[str, ...]) -> bool:
+    return not perms or any(actor.has(p) for p in perms)
+
+
+def allowed_tools(actor: Principal) -> list[str]:
+    return [n for n in TOOLS if _allowed(actor, TOOL_ACCESS.get(n, ((), None))[0])]
+
+
+def sections_for(actor: Principal) -> dict[str, str]:
+    return {path: label for path, (label, perms) in SECTIONS.items() if _allowed(actor, perms)}
+
+
+def _links_for(actor: Principal, name: str, result: dict) -> list[dict]:
+    """Links to the app sections behind a tool result, limited to what the user may open."""
+    links: list[dict] = []
+    visible = sections_for(actor)
+    path = TOOL_ACCESS.get(name, ((), None))[1]
+    if path in ("/sales", "/shifts") and path not in visible:
+        path = "/dashboard" if "/dashboard" in visible else "/finance"
+    if path in visible:
+        links.append({"label": visible[path], "href": path})
+    if name == "find_products" and actor.has("catalog.view"):
+        for m in result.get("matches", [])[:3]:
+            links.append({"label": m["name"], "href": f"/stock/products/{m['product_id']}"})
+    if name == "get_pending_approvals":
+        for r in result.get("waiting_for_you", [])[:3]:
+            links.append({"label": f"Approval {r['ref']}", "href": f"/approvals/{r['approval_id']}"})
+    return links
+
+
+def _tool_specs(actor: Principal) -> list[dict]:
+    return [{"type": "function", "function": {"name": n, "description": TOOLS[n][1], "parameters": TOOLS[n][2]}}
+            for n in allowed_tools(actor)]
 
 
 def _run_tool(actor: Principal, name: str, raw_args: str) -> dict:
     if name not in TOOLS:
         return {"error": f"unknown tool {name}"}
+    if name not in allowed_tools(actor):
+        return {"error": "Your role does not give access to this information."}
     try:
         args = json.loads(raw_args or "{}")
         if not isinstance(args, dict):
@@ -209,10 +282,15 @@ def _system_prompt(actor: Principal) -> str:
         f"Today is {today.isoformat()} (Africa/Kampala). Currency is UGX (no decimals). "
         f"You are talking to {actor.full_name.split(' (TEST')[0]}, roles: {', '.join(sorted(actor.roles))}; "
         f"branches they may see: {', '.join(branches) or 'none'}.\n"
+        f"Sections of the app they can open: {'; '.join(sections_for(actor).values()) or 'none'}.\n"
         "Rules:\n"
         "- Answer ONLY from tool results. Never invent figures, products, people or events. If a tool returns an error "
         "or no data, say so plainly ('not enough data' is a valid answer).\n"
-        "- You cannot take actions (no approving, posting, transferring, pricing, refunding). Suggest which screen to use.\n"
+        "- Respect the user's rights: you only have the tools their role allows. If they ask for something outside "
+        "their role or branches, say so politely, do not guess, and suggest who could help (e.g. the accountant or the "
+        "head manager).\n"
+        "- You cannot take actions (no approving, posting, transferring, pricing, refunding). Name the section of the "
+        "app where they can see the detail or act (only sections listed above); links are shown under your answer.\n"
         "- Be concise and practical for a busy manager: short paragraphs or bullets, key numbers formatted like "
         "UGX 1,234,500, and state the period and branches the figures cover.\n"
         "- Distinguish gross sales (incl. VAT, POS) from net sales (ex-VAT, ledger), gross profit, operating profit and cash.\n"
@@ -264,13 +342,14 @@ def chat(actor: Principal, message: str, history: list[dict] | None = None) -> d
             msgs.append({"role": h["role"], "content": h["content"][:2000]})
     msgs.append({"role": "user", "content": question})
     used: list[dict] = []
+    links: list[dict] = []
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
     answer = None
     try:
         with httpx.Client(base_url=s.ai_base_url, timeout=45, transport=TRANSPORT,
                           headers={"Authorization": f"Bearer {s.ai_api_key}", "Content-Type": "application/json"}) as client:
             for _ in range(MAX_TOOL_ROUNDS):
-                r = client.post("/chat/completions", json={"model": s.ai_model, "messages": msgs, "tools": _tool_specs(),
+                r = client.post("/chat/completions", json={"model": s.ai_model, "messages": msgs, "tools": _tool_specs(actor),
                                                           "temperature": 0.2, "max_tokens": 900})
                 r.raise_for_status()
                 data = r.json()
@@ -287,6 +366,8 @@ def chat(actor: Principal, message: str, history: list[dict] | None = None) -> d
                     args = c["function"].get("arguments") or "{}"
                     result = _run_tool(actor, name, args)
                     summary = "error: " + result["error"] if isinstance(result, dict) and "error" in result else "ok"
+                    if summary == "ok":
+                        links += [ln for ln in _links_for(actor, name, result) if ln not in links]
                     used.append({"tool": name, "args": json.loads(args) if args.strip().startswith("{") else {}, "result": summary})
                     msgs.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(result, default=str)[:12000]})
             if not answer:
@@ -300,7 +381,7 @@ def chat(actor: Principal, message: str, history: list[dict] | None = None) -> d
                 "note": "The AI service did not respond; showing the rule-based answer instead."}
     latency = int((time.monotonic() - started) * 1000)
     _log(actor, question, used, answer, "answered", s.ai_model, usage, latency)
-    return {"answer": answer, "evidence": used, "llm": True, "model": s.ai_model, "latency_ms": latency,
+    return {"answer": answer, "evidence": used, "links": links[:6], "llm": True, "model": s.ai_model, "latency_ms": latency,
             "note": "AI-generated from your authorised data. Check important figures in the reports."}
 
 
@@ -309,6 +390,20 @@ def status(actor: Principal) -> dict:
     s = get_settings()
     return {"enabled": s.ai_llm_enabled, "model": s.ai_model if s.ai_llm_enabled else None,
             "provider": "DeepSeek" if s.ai_llm_enabled else None, "hourly_limit": s.ai_hourly_limit,
-            "suggestions": ["How are sales this week compared with last week?", "Which items may run out soon?",
-                            "What was our gross margin this month by branch?", "Any products close to expiry?",
-                            "Which approvals are waiting for me?", "How much cash do we hold right now?"]}
+            "suggestions": suggestions(actor)}
+
+
+SUGGESTIONS = [
+    ("How are sales this week compared with last week?", ("finance.view", "dashboard.branch")),
+    ("Which items may run out soon?", ("insights.view",)),
+    ("What was our gross margin this month by branch?", ("finance.view",)),
+    ("Any food close to expiry?", ("insights.view",)),
+    ("Which approvals are waiting for me?", ("approvals.inbox",)),
+    ("How much cash do we hold right now?", ("finance.view",)),
+    ("How much stock of sugar do we have?", ("catalog.view",)),
+    ("Which shifts had cash shortages this month?", ("pos.shift.reconcile",)),
+]
+
+
+def suggestions(actor: Principal) -> list[str]:
+    return [q for q, perms in SUGGESTIONS if _allowed(actor, perms)][:6]
