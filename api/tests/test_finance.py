@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from conftest import q, q1
+from conftest import new_key, q, q1
 
 D = Decimal
 
@@ -89,15 +89,15 @@ def test_bank_deposit_moves_cash_from_safe_to_bank(login, ids):
     from conftest import account_balance
     sth = ids["branch"]["STH"]
     assert login("cash.sth1").post("/api/finance/bank-deposits", {"branch_id": sth, "amount": "1000", "date": "2026-11-15",
-                                                                   "reference": "SLIP-1"}).status_code == 403
+                                                                   "reference": "SLIP-1", "idempotency_key": new_key()}).status_code == 403
     acc = login("acc.amina")
     safe = account_balance("1.1.1.02", sth)
     too_much = acc.post("/api/finance/bank-deposits", {"branch_id": sth, "amount": str(safe + 1000), "date": "2026-11-15",
-                                                       "reference": "SLIP-2"})
+                                                       "reference": "SLIP-2", "idempotency_key": new_key()})
     assert too_much.status_code == 422  # cannot bank more than the safe holds
     if safe >= 1000:
         bank0 = account_balance("1.1.1.03", sth)
-        r = acc.post("/api/finance/bank-deposits", {"branch_id": sth, "amount": "1000", "date": "2026-11-15", "reference": "SLIP-3"})
+        r = acc.post("/api/finance/bank-deposits", {"branch_id": sth, "amount": "1000", "date": "2026-11-15", "reference": "SLIP-3", "idempotency_key": new_key()})
         assert r.status_code == 201, r.text
         assert account_balance("1.1.1.03", sth) - bank0 == 1000
         assert safe - account_balance("1.1.1.02", sth) == 1000

@@ -16,7 +16,7 @@ offline-capable branch tills, and evidence-linked business insights.
 | **API** | Python 3.12 · FastAPI · Pydantic |
 | **Web** | React 19 · TypeScript (strict) · Vite · Tailwind CSS 4 · TanStack Query · Recharts |
 | **Offline** | Branch-edge service (FastAPI + SQLite/WAL) with an immutable outbox |
-| **Tests** | 94 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 11 browser E2E (Playwright) |
+| **Tests** | 106 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 11 browser E2E (Playwright) |
 
 ---
 
@@ -300,7 +300,7 @@ a transfer with a 100 → 95 shortfall, a cash shortage, an interrupted shift, a
 ## Testing
 
 ```bash
-MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 94 integration tests
+MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest      # 106 integration tests
 .venv/Scripts/ruff check api branch-edge tryton-modules
 (cd web && npx tsc -b --noEmit && npm run build)
 
@@ -397,7 +397,7 @@ The full policy is in [docs/accounting-policy.md](docs/accounting-policy.md).
 
 ## Status
 
-**Working and tested** (94 integration tests + 11 browser E2E; deployed on Render):
+**Working and tested** (106 integration tests + 11 browser E2E; deployed on Render):
 - POS, shifts and refunds
 - Stock, transfers, write-offs and counts
 - The procurement → payment chain, and expenses

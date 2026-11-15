@@ -7,7 +7,7 @@ import json
 import logging
 import secrets
 import uuid
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 from typing import Any
 
 import httpx
@@ -34,6 +34,11 @@ def now() -> dt.datetime:
 
 def money(v) -> Decimal:
     return Decimal(str(v)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+def line_amount(q, unit) -> Decimal:
+    """Same rule as the central system and Tryton: half-even to whole shillings."""
+    return (Decimal(str(q)) * Decimal(str(unit))).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
 
 
 def qty(v) -> Decimal:
@@ -147,7 +152,7 @@ def sell(store: Store, sess: dict, *, client_key: str, lines: list[dict], paymen
                 raise EdgeError(f"Discounts above {max_disc}% need the central system (manager override is online only).", 403)
             gross = money(item["price"])
             unit = money(gross * (100 - pct) / 100) if pct else gross
-            total += money(q * unit)
+            total += line_amount(q, unit)
             need[item["id"]] = need.get(item["id"], Decimal(0)) + q
             priced.append({"product_id": item["id"], "name": item["name"], "uom": item["uom"], "quantity": str(q),
                            "unit_price": str(unit), "list_price": str(gross), "discount_pct": str(pct)})

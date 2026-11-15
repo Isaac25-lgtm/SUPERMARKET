@@ -266,4 +266,4 @@ def seed_spread_sale_times() -> None:
                  SET posted_at = ((sale_date + time '08:00'
                                    + make_interval(secs => floor(46800 * sqrt(mod(id * 7919, 1000) / 1000.0))))
                                   AT TIME ZONE 'Africa/Kampala')
-                 WHERE idempotency_key LIKE 'seed-%'""")
+                 WHERE idempotency_key ~ '(^|:)seed-'""")

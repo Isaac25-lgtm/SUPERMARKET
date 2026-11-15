@@ -18,13 +18,18 @@ User requests delivered in the same change: the logo returns to your dashboard; 
 page; automatic sign-out after 5 idle minutes (browser and server); the demo picker is grouped by role family;
 barcode registration, validation and scanning (see `docs/barcode-scanners.md`).
 
+## Stage 2 (part 1: money)
+| ID | Status | What changed | Regression tests |
+| --- | --- | --- | --- |
+| H2 idempotency | **fixed** | One contract (`services/idempotency.py`, migration 0006 `motion.operation`) for POS sale, refund pay-out and bank deposit. Each key is scoped to operation + user and carries a request fingerprint and the result. The key is resolved before stock guards, line counters, approvals or the shift are touched. Same key + same request replays the receipt; same key + a different request returns 409. The row commits with the business result, so a simultaneous duplicate waits, fails serialization and replays. `post_sale` no longer returns an earlier row for a reused key. The till keeps one key per basket across failures and reloads (15-minute window), and a refund pay-out uses a stable key per approval. A bank slip reference posts only once per branch. | `test_stage2_money.py`: replay, changed payload, per-cashier scope, two-thread duplicate, refund replay with one approval transition, deposit replay and unique slip |
+| H3 line calculator | **fixed** | One rule, quantity × unit price rounded half-even like Tryton: `common.line_amount`, `web/src/lib/money.ts` and the offline till use it. Posting asserts Tryton's line amount equals it. Each sale line stores gross, VAT and the original tax ids, plus refunded gross and VAT (backfilled; all 1,352 dev sales reconcile). Partial refunds take a proportional share, and the last one closes the line's remaining gross and VAT exactly. Refunds post the original taxes (Tryton `motion_line_taxes` override). Only one open refund per receipt, the receipt row is locked, and duplicate lines are refused. The pay-out must match the approved per-line amounts. Current-cost COGS on returns is unchanged (documented policy). | `test_weighted_line_uses_the_same_rounding_as_tryton`, `test_partial_refunds_close_the_line_exactly`, `test_one_open_refund_per_receipt_and_no_duplicate_lines`, `test_refund_reverses_the_original_vat_not_todays_rules` |
+| H3 refund tender | **fixed (interim policy)** | Tryton only allows cash pay-outs at the till. The till refunds cash up to the cash taken on that receipt, minus earlier refunds. A mobile-money or card portion is refused at request time and must be refunded by Finance through the provider, so an unverified claim never becomes till cash. **Finance to confirm.** | `test_till_refunds_cash_only_up_to_the_cash_paid` |
+| H10 shift close | **fixed (online)** | Checkout and refund bump the open shift's `activity_seq` (migration 0006), so they serialize with close and force-close: a sale is either counted in the close or refused with "open a shift". Cash payments must land in the shift's own Tryton cash session. The cashier's open-shift view hides takings and expected cash until the blind count; supervisors and the close result still show them. Late offline events still post with no shift (cash custody: **Finance decision**, unchanged). | `test_close_and_checkout_serialize`; blind-count assertion in `test_shift_close_books_variance_to_over_short` |
+
 ## Next stages (planned, in the audit's order)
-- **Stage 2, money and inventory:**
-  - H2: one idempotency contract (operation key + fingerprint + result) for sale, refund and bank deposit.
-  - H3: one canonical line calculator shared by preview and posting; per-line refundable gross/net/VAT balances.
+- **Stage 2, part 2 (inventory and purchasing):**
   - H4: explicit transfer counts, shared stock guards, Tryton state assertions on late receipts.
   - H5: receipt-level invoice allocation, supplier-reference duplicate check, Tryton-derived open balances.
-  - H10: shift-close serialization, and expected cash hidden before the blind count.
 - **Stage 3:**
   - H6: replace blanket `_skip_warnings` with classified, authorized confirmations.
   - H7: step-up manager authentication bound to the exact cart, with trusted proxy configuration.

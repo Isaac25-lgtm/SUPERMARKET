@@ -407,12 +407,14 @@ class DepositIn(BaseModel):
     amount: Decimal = Field(gt=0)
     date: dt.date
     reference: str = Field(min_length=3, max_length=60)
+    idempotency_key: str = Field(min_length=8, max_length=120)
 
 
 @router.post("/finance/bank-deposits")
 def bank_deposit(body: DepositIn, request: Request):
     return MotionJSON(unit_of_work(request, lambda p: finance.bank_deposit(
-        p, branch_id=body.branch_id, amount=body.amount, date=body.date, reference=body.reference)), status_code=201)
+        p, branch_id=body.branch_id, amount=body.amount, date=body.date, reference=body.reference,
+        idempotency_key=body.idempotency_key)), status_code=201)
 
 
 @router.get("/finance/ledger")

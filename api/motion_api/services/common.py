@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
 from .. import tryton as t
@@ -15,6 +15,13 @@ ZERO = Decimal(0)
 def money(value) -> Decimal:
     """UGX has no minor unit in practice: round half-up to whole shillings."""
     return Decimal(str(value or 0)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+def line_amount(quantity, unit_gross) -> Decimal:
+    """THE line calculator (Codex H3): quantity x tax-inclusive unit price, rounded half-even
+    to whole shillings exactly like Tryton's currency rounding. The browser till
+    (web/src/lib/money.ts) and the offline till (branch-edge) use the same rule."""
+    return (Decimal(str(quantity)) * Decimal(str(unit_gross))).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
 
 
 def qty(value) -> Decimal:

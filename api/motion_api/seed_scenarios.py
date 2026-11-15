@@ -37,10 +37,13 @@ def _approve_all(req: dict, *usernames: str, comment: str = "Checked - OK (TEST)
 def refund_scenario() -> None:
     cashier = principal("cash.cen1")
     sale = t.sql_one("""SELECT s.id FROM motion.pos_sale s JOIN sale_point p ON p.id=s.register_id
-                        WHERE p.name='CEN-T1' AND s.kind='sale' AND s.sale_date = %s ORDER BY s.total DESC LIMIT 1""",
+                        WHERE p.name='CEN-T1' AND s.kind='sale' AND s.sale_date = %s
+                          AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.payments) x WHERE x->>'method' <> 'cash')
+                          AND EXISTS (SELECT 1 FROM motion.pos_sale_line l WHERE l.pos_sale_id=s.id AND l.quantity >= 1)
+                        ORDER BY s.total DESC LIMIT 1""",
                      (common.today() - dt.timedelta(days=1),))
-    line = t.sql_one("SELECT id, quantity FROM motion.pos_sale_line WHERE pos_sale_id=%s ORDER BY unit_price DESC LIMIT 1",
-                     (sale["id"],))
+    line = t.sql_one("""SELECT id, quantity FROM motion.pos_sale_line WHERE pos_sale_id=%s AND quantity >= 1
+                        ORDER BY unit_price DESC LIMIT 1""", (sale["id"],))
     req = pos.request_refund(cashier, sale_id=sale["id"], lines=[{"line_id": line["id"], "quantity": 1}],
                              reason="Customer returned item: packaging damaged (TEST)")
     _approve_all(req, "bm.joseph", comment="Inspected item; refund approved (TEST)")
@@ -164,7 +167,8 @@ def banking_scenarios() -> None:
             amount = (D(w["net"]) * D("0.9")).quantize(D("1000"))
             if amount > 0:
                 finance.bank_deposit(acc, branch_id=b["id"], amount=amount, date=w["wk"] + dt.timedelta(days=6),
-                                     reference=f"DEP-{b['code']}-{w['wk']:%y%m%d} (TEST)")
+                                     reference=f"DEP-{b['code']}-{w['wk']:%y%m%d} (TEST)",
+                                     idempotency_key=f"seed-dep-{b['code']}-{w['wk']:%y%m%d}")
 
 
 def misc_scenarios() -> None:

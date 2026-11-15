@@ -170,7 +170,12 @@ def test_shift_close_books_variance_to_over_short(login, ids):
     cur = api.get("/api/pos/shift").json()["shift"]
     if not cur:
         cur = api.post("/api/pos/shifts", {"register_id": ids["register"]["STH-T1"], "opening_float": "50000"}).json()
-    expected = D(api.get("/api/pos/shift").json()["shift"]["expected_cash_now"])
+    mine = api.get("/api/pos/shift").json()["shift"]
+    # H10: blind count - the cashier never sees the expected cash or takings before counting.
+    assert "expected_cash_now" not in mine and "net_total" not in mine
+    from motion_api import tryton as t
+    from motion_api.services import pos
+    expected = D(t.run(lambda: pos._with_live_totals(pos._shift(cur["id"]), reveal=True), readonly=True)["expected_cash_now"])
     over_short0 = account_balance("6.1.2.01", ids["branch"]["STH"])
     r = api.post(f"/api/pos/shifts/{cur['id']}/close", {"counted_cash": str(expected - 1500), "cash_drop": "0"})
     assert r.status_code == 200, r.text

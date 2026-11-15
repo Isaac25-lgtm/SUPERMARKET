@@ -22,7 +22,7 @@ from ..audit import record
 from ..errors import Conflict, Forbidden, Invalid, NotFound
 from ..security import Principal, load_principal, utcnow, verify_password
 from ..settings import get_settings
-from . import approvals, catalog, common
+from . import approvals, catalog, common, idempotency
 
 METHOD_NAMES = {
     "cash": "Cash",
@@ -68,7 +68,7 @@ def _shift(shift_id: int, lock: bool = False) -> dict:
     return row
 
 
-def my_open_shift(actor: Principal) -> dict | None:
+def my_open_shift(actor: Principal) -> dict | None:  # cashier's own view: blind until counted
     row = t.sql_one("""SELECT s.*, p.name AS register_name, b.name AS branch_name FROM motion.shift s
                        JOIN sale_point p ON p.id=s.register_id JOIN motion_branch b ON b.id=s.branch_id
                        WHERE s.cashier_id=%s AND s.status='open'""", (actor.user_id,))
@@ -77,14 +77,21 @@ def my_open_shift(actor: Principal) -> dict | None:
     return _with_live_totals(row)
 
 
-def _with_live_totals(shift: dict) -> dict:
-    Session = t.model("sale.point.cash.session")
-    session = Session(shift["tryton_session_id"])
+def _with_live_totals(shift: dict, *, reveal: bool = False) -> dict:
+    """Shift summary. While a shift is open the cashier sees counts only (blind cash count,
+    Codex H10); money totals and the expected cash appear once the count is recorded, or
+    to supervisors (``reveal``)."""
     shift = dict(shift)
     totals = t.sql_one("""SELECT count(*) FILTER (WHERE kind='sale') AS sales, count(*) FILTER (WHERE kind='refund') AS refunds,
                                  COALESCE(sum(total),0) AS net_total FROM motion.pos_sale WHERE shift_id=%s""", (shift["id"],))
     shift.update(totals)
-    if shift["status"] == "open":
+    blind = shift["status"] == "open" and not reveal
+    if blind:
+        shift.pop("net_total", None)
+        for k in ("expected_cash", "counted_cash", "variance"):
+            shift.pop(k, None)
+    elif shift["status"] == "open":
+        session = t.model("sale.point.cash.session")(shift["tryton_session_id"])
         shift["expected_cash_now"] = common.money(session.start_amount + session.balance)
     shift["interrupted"] = shift["status"] == "open" and shift["opened_at"] < utcnow() - timedelta(hours=INTERRUPTED_AFTER_HOURS)
     return shift
@@ -171,7 +178,7 @@ def close_shift(actor: Principal, shift_id: int, *, counted_cash: Decimal, cash_
     record(actor=actor, action="pos.shift.close" if own else "pos.shift.force_close", target_type="shift",
            target_id=shift_id, branch_id=shift["branch_id"], amount=variance, reason=note,
            after={"expected": expected, "counted": counted, "variance": variance, "cash_drop": drop})
-    return _with_live_totals(_shift(shift_id))
+    return _with_live_totals(_shift(shift_id), reveal=True)
 
 
 def reconcile_shift(actor: Principal, shift_id: int, note: str) -> dict:
@@ -192,7 +199,7 @@ def reconcile_shift(actor: Principal, shift_id: int, note: str) -> dict:
               (note, actor.user_id, str(shift_id)))
     record(actor=actor, action="pos.shift.reconcile", target_type="shift", target_id=shift_id,
            branch_id=shift["branch_id"], amount=shift["variance"], reason=note)
-    return _with_live_totals(_shift(shift_id))
+    return _with_live_totals(_shift(shift_id), reveal=True)
 
 
 def list_shifts(actor: Principal, *, branch_id: int | None = None, status: str | None = None, limit: int = 100) -> list[dict]:
@@ -246,7 +253,21 @@ def _lock_guards(location_id: int, product_ids: list[int]) -> None:
 
 
 def _line_amount(q: Decimal, unit_gross: Decimal) -> Decimal:
-    return common.money(q * unit_gross)
+    return common.line_amount(q, unit_gross)
+
+
+def _hold_shift(actor: Principal, register_id: int, *, purpose: str) -> dict:
+    """Serialize a sale or refund with shift close (Codex H10): bump the open shift's
+    activity counter. A close running concurrently either waits for this transaction
+    and then fails serialization (and is retried with a snapshot that includes the
+    sale), or has already committed, in which case this update fails serialization and
+    the retry finds no open shift."""
+    shift = t.sql_one("""UPDATE motion.shift SET activity_seq = activity_seq + 1
+                         WHERE cashier_id=%s AND register_id=%s AND status='open' RETURNING *""",
+                      (actor.user_id, register_id))
+    if not shift:
+        raise Conflict(f"Open a shift on this register {purpose}.")
+    return shift
 
 
 _DEFERRED: list[int] = []
@@ -270,17 +291,19 @@ def post_deferred() -> int:
 def post_sale(*, register: dict, cashier: dict, lines: list[dict], payments: list[dict], sale_date,
               idempotency_key: str, source: str, shift_id: int | None, enforce_stock: bool,
               kind: str = "sale", refund_of: int | None = None, approval_id: int | None = None,
-              edge_device_id: int | None = None, local_created_at=None, defer_post: bool = False) -> dict:
+              edge_device_id: int | None = None, local_created_at=None, defer_post: bool = False,
+              cash_session_id: int | None = None) -> dict:
     """Create, process and post a Tryton POS sale.
 
     ``lines``: [{product_id, quantity (Decimal, negative for refunds), unit_gross (charged), list_gross,
-                 discount_pct, refund_of_line}]
+                 discount_pct, refund_of_line, and for refunds: unit_net + tax_ids of the original line}]
     ``payments``: [{method: cash|mobile_money|card, amount (Decimal), reference}]
+    Idempotency is the caller's job (operation ledger for online commands, event id for
+    edge sync); a reused posting key here is a bug and is refused.
     Returns the stored pos_sale row plus Tryton ids. Raises Conflict on oversell.
     """
-    existing = t.sql_one("SELECT * FROM motion.pos_sale WHERE idempotency_key=%s", (idempotency_key,))
-    if existing:
-        return {**existing, "replayed": True}
+    if t.sql_one("SELECT 1 AS x FROM motion.pos_sale WHERE idempotency_key=%s", (idempotency_key,)):
+        raise Conflict("This transaction was already posted.")
     branch_id = register["branch_id"]
     location = register["storage_location_id"]
     product_ids = [line["product_id"] for line in lines]
@@ -306,23 +329,44 @@ def post_sale(*, register: dict, cashier: dict, lines: list[dict], payments: lis
     Product = t.model("product.product")
     methods = _method_ids()
     ctx = common.tryton_context(branch_id)
+    # H3: a refund reverses the VAT of the original sale, not today's tax rules.
+    fixed_taxes = {str(ln["product_id"]): list(ln["tax_ids"]) for ln in lines if ln.get("tax_ids") is not None}
+    if fixed_taxes:
+        ctx["motion_line_taxes"] = fixed_taxes
     with t.set_context(**ctx), t.transaction().set_user(cashier["tryton_user_id"] or 0):
         tlines = []
         for line in lines:
             product = Product(line["product_id"])
-            taxes = list(product.customer_taxes_used)
             unit_gross = Decimal(line["unit_gross"])
-            unit_list = Decimal(Tax.reverse_compute(unit_gross, taxes, sale_date)).quantize(Decimal("0.0001")) if taxes else unit_gross
+            if line.get("unit_net") is not None:
+                unit_list = Decimal(line["unit_net"])
+            else:
+                taxes = list(product.customer_taxes_used)
+                unit_list = Decimal(Tax.reverse_compute(unit_gross, taxes, sale_date)).quantize(Decimal("0.0001")) if taxes else unit_gross
             tlines.append(Line(product=product, quantity=float(line["quantity"]), unit_list_price=unit_list,
                                unit_gross_price=unit_gross))
         sale = Sale(company=ctx["company"], point=register["id"], date=sale_date,
                     employee=cashier.get("tryton_employee_id"), lines=tlines)
         sale.save()
+        stored = []
+        for line, tline in zip(lines, sale.lines):
+            gross, tax = common.money(tline.gross_amount), common.money(tline.tax_amount)
+            expected = line.get("amount", _line_amount(line["quantity"], Decimal(line["unit_gross"])))
+            if gross != expected:  # one canonical calculator: API, till and Tryton must agree
+                raise RuntimeError(f"line amount mismatch: Tryton {gross} vs expected {expected}")
+            stored.append({"id": tline.id, "gross": gross, "tax": tax, "tax_ids": [x.id for x in tline.taxes]})
         total = common.money(sale.total)
         paid = sum((p["amount"] for p in payments), Decimal(0))
         if paid != total:
             raise Invalid(f"Payments ({paid}) do not equal the sale total ({total}).")
-        Payment.create([{"sale": sale.id, "method": methods[p["method"]], "amount": p["amount"]} for p in payments if p["amount"]])
+        created = Payment.create([{"sale": sale.id, "method": methods[p["method"]], "amount": p["amount"]}
+                                  for p in payments if p["amount"]])
+        if cash_session_id is not None:
+            # H10: cash must land in the cash session of the cashier's verified open shift.
+            for pay in created:
+                if pay.session and pay.session.id != cash_session_id:
+                    raise Conflict("The till's cash session changed (another shift was opened on this register). "
+                                   "Close and reopen your shift.")
         Sale.process([sale])
         if sale.state != "done":
             raise Conflict("Sale could not be completed (amount still to pay).")
@@ -332,9 +376,8 @@ def post_sale(*, register: dict, cashier: dict, lines: list[dict], payments: lis
             Sale.post([sale])
             common.expect_state(sale, "posted", what="POS sale posting")
         number, total_tax = sale.number, common.money(sale.total_tax)
-        tline_ids = [ln.id for ln in sale.lines]
     discount_total = sum((_line_amount(abs(ln["quantity"]), Decimal(ln["list_gross"])) - _line_amount(abs(ln["quantity"]), Decimal(ln["unit_gross"]))
-                          for ln in lines), Decimal(0))
+                          for ln in lines if "amount" not in ln), Decimal(0))
     unverified = any(p["method"] != "cash" for p in payments)
     row = t.sql_one("""
         INSERT INTO motion.pos_sale (idempotency_key, tryton_sale_id, number, branch_id, register_id, shift_id, cashier_id,
@@ -346,11 +389,13 @@ def post_sale(*, register: dict, cashier: dict, lines: list[dict], payments: lis
          json.dumps([{**p, "amount": str(p["amount"]),
                       "verification": "n/a" if p["method"] == "cash" else "pending"} for p in payments]),
          unverified))
-    for line, tline_id in zip(lines, tline_ids):
+    for line, st in zip(lines, stored):
         t.execute("""INSERT INTO motion.pos_sale_line (pos_sale_id, tryton_line_id, product_id, quantity, unit_price,
-                     list_unit_price, discount_pct, refund_of_line) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                  (row["id"], tline_id, line["product_id"], line["quantity"], common.money(line["unit_gross"]),
-                   common.money(line["list_gross"]), line.get("discount_pct") or 0, line.get("refund_of_line")))
+                     list_unit_price, discount_pct, refund_of_line, line_gross, line_tax, tax_ids)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                  (row["id"], st["id"], line["product_id"], line["quantity"], common.money(line["unit_gross"]),
+                   common.money(line["list_gross"]), line.get("discount_pct") or 0, line.get("refund_of_line"),
+                   st["gross"], st["tax"], st["tax_ids"]))
     if conflicts:
         for c in conflicts:
             t.execute("""INSERT INTO motion.discrepancy (kind, branch_id, source_type, source_id, product_id, quantity, detail)
@@ -408,22 +453,28 @@ def _check_override(actor: Principal, register: dict, lines: list[dict], approva
     return approval_id
 
 
+def _sale_fingerprint(register_id, lines, payments, override_approval_id) -> dict:
+    try:
+        return {"register_id": int(register_id), "override_approval_id": override_approval_id,
+                "lines": [{"product_id": int(x["product_id"]), "quantity": common.qty(x["quantity"]),
+                           "discount_pct": Decimal(str(x.get("discount_pct") or 0))} for x in lines],
+                "payments": [{"method": x.get("method"), "amount": common.money(x.get("amount")),
+                              "reference": (x.get("reference") or "").strip() or None} for x in payments]}
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        raise Invalid("The basket or payment details are not valid.") from None
+
+
 def checkout(actor: Principal, *, register_id: int, idempotency_key: str, lines: list[dict], payments: list[dict],
              override_approval_id: int | None = None, _sale_date=None, _defer_post: bool = False) -> dict:
     actor.require("pos.sell", action="pos.sale")
-    if not idempotency_key or len(idempotency_key) < 8:
-        raise Invalid("Missing idempotency key.")
-    existing = t.sql_one("SELECT * FROM motion.pos_sale WHERE idempotency_key=%s", (idempotency_key,))
-    if existing:
-        if existing["cashier_id"] != actor.user_id:
-            raise Conflict("Duplicate transaction key.")
-        return receipt(actor, existing["id"], replayed=True)
+    request = _sale_fingerprint(register_id, lines, payments, override_approval_id)
+    # H2: resolve the key before touching stock guards, approvals or the shift.
+    replay = idempotency.claim("pos.sale", actor, idempotency_key, request)
+    if replay:
+        return receipt(actor, int(replay), replayed=True)
     reg = common.register(register_id)
     actor.require_branch(reg["branch_id"], action="pos.sale", target_type="register", target_id=register_id)
-    shift = t.sql_one("SELECT * FROM motion.shift WHERE cashier_id=%s AND register_id=%s AND status='open'",
-                      (actor.user_id, register_id))
-    if not shift:
-        raise Conflict("Open a shift on this register before selling.")
+    shift = _hold_shift(actor, register_id, purpose="before selling")
     if not lines:
         raise Invalid("The basket is empty.")
     items = {i["id"]: i for i in catalog._rows(ids=[int(x["product_id"]) for x in lines])}
@@ -457,9 +508,10 @@ def checkout(actor: Principal, *, register_id: int, idempotency_key: str, lines:
                                    "change": str(change)}] if cash_due else [])
     cashier = {"id": actor.user_id, "tryton_user_id": actor.tryton_user_id, "tryton_employee_id": actor.tryton_employee_id}
     result = post_sale(register=reg, cashier=cashier, lines=priced, payments=tryton_payments, sale_date=_sale_date or common.today(),
-                       idempotency_key=idempotency_key, source="online", shift_id=shift["id"],
-                       enforce_stock=not pos_policy().get("allow_negative_stock", False), approval_id=override_id,
-                       defer_post=_defer_post)
+                       idempotency_key=idempotency.internal_key("pos.sale", actor, idempotency_key), source="online",
+                       shift_id=shift["id"], enforce_stock=not pos_policy().get("allow_negative_stock", False),
+                       approval_id=override_id, defer_post=_defer_post, cash_session_id=shift["tryton_session_id"])
+    idempotency.complete("pos.sale", actor, idempotency_key, request, result_type="pos_sale", result_id=result["id"])
     if override_id:
         approvals.mark_executed(override_id, actor=actor, result_type="pos_sale", result_id=result["id"])
     record(actor=actor, action="pos.sale", target_type="pos_sale", target_id=result["number"], branch_id=reg["branch_id"],
@@ -512,84 +564,142 @@ def find_sale(actor: Principal, number: str) -> dict:
     return receipt(actor, row["id"])
 
 
+def _refund_amounts(orig: dict, q: Decimal) -> tuple[Decimal, Decimal]:
+    """Gross and VAT to reverse for ``q`` units of an original line (Codex H3).
+
+    Partial refunds take their proportional share (half-even); the refund that
+    returns the last units closes the line's remaining gross and VAT exactly, so a
+    series of partial refunds always reverses the original sale to the shilling."""
+    left_q = common.qty(orig["quantity"]) - common.qty(orig["refunded_qty"])
+    left_gross = common.money(orig["line_gross"] - orig["refunded_gross"])
+    left_tax = common.money(orig["line_tax"] - orig["refunded_tax"])
+    if q == left_q:
+        return left_gross, left_tax
+    share = q / common.qty(orig["quantity"])
+    gross = min(common.line_amount(share, orig["line_gross"]), left_gross)
+    tax = min(common.line_amount(share, orig["line_tax"]), left_tax, gross)
+    return gross, tax
+
+
+def _open_refund(sale_id: int) -> dict | None:
+    return t.sql_one("""SELECT id, ref, status FROM motion.approval_request WHERE action_type='refund'
+                        AND status IN ('pending','approved') AND consumed_at IS NULL
+                        AND (payload->>'sale_id')::int = %s ORDER BY id LIMIT 1""", (sale_id,))
+
+
+def _refund_plan(sale: dict, raw_lines: list[dict]) -> tuple[list[dict], Decimal]:
+    """Validate requested refund lines against the original receipt (locked by the caller)."""
+    originals = {r["id"]: r for r in t.sql("SELECT * FROM motion.pos_sale_line WHERE pos_sale_id=%s FOR UPDATE",
+                                           (sale["id"],))}
+    plan, seen, total = [], set(), Decimal(0)
+    for ln in raw_lines:
+        lid = int(ln["line_id"])
+        if lid in seen:
+            raise Invalid("Each receipt line can appear only once in a refund.")
+        seen.add(lid)
+        orig = originals.get(lid)
+        if not orig or orig["quantity"] <= 0:
+            raise Invalid("Line does not belong to this sale.")
+        q = common.qty(ln["quantity"])
+        left = common.qty(orig["quantity"]) - common.qty(orig["refunded_qty"])
+        if q <= 0 or q > left:
+            raise Invalid(f"Refund quantity exceeds what can still be refunded ({left}).")
+        gross, tax = _refund_amounts(orig, q)
+        total += gross
+        plan.append({"line_id": lid, "quantity": str(q), "product_id": orig["product_id"], "gross": str(gross),
+                     "tax": str(tax), "orig": orig})
+    if not plan:
+        raise Invalid("Select at least one line to refund.")
+    return plan, total
+
+
+def _refund_tenders(sale: dict, total: Decimal) -> list[dict]:
+    """Till refunds are paid in cash (Tryton allows only cash pay-outs), and never more
+    than the cash taken on the original receipt minus earlier cash refunds. A mobile-money
+    or card portion is not turned into till cash: Finance refunds it through the provider
+    (Codex H3; policy to be confirmed by Finance)."""
+    cash_left = sum((Decimal(p["amount"]) for p in sale["payments"] if p["method"] == "cash"), Decimal(0))
+    for r in t.sql("SELECT payments FROM motion.pos_sale WHERE refund_of=%s", (sale["id"],)):
+        cash_left += sum((Decimal(p["amount"]) for p in r["payments"] if p["method"] == "cash"), Decimal(0))
+    if total > cash_left:
+        others = sorted({p["method"].replace("_", " ") for p in sale["payments"] if p["method"] != "cash"})
+        raise Invalid(f"Only UGX {common.money(max(cash_left, Decimal(0))):,} of this receipt was paid in cash and can be "
+                      f"refunded at the till. The {' / '.join(others) or 'non-cash'} part must be refunded by Finance "
+                      "through the provider.")
+    return [{"method": "cash", "amount": -common.money(total)}]
+
+
 def request_refund(actor: Principal, *, sale_id: int, lines: list[dict], reason: str) -> dict:
     actor.require("pos.refund.request", action="pos.refund.request")
-    sale = _sale_row(sale_id)
+    sale = t.sql_one("SELECT * FROM motion.pos_sale WHERE id=%s FOR UPDATE", (sale_id,))  # one refund at a time per receipt
+    if not sale:
+        raise NotFound("Sale not found.")
     actor.require_branch(sale["branch_id"], action="pos.refund.request", target_type="pos_sale", target_id=sale["number"])
     if sale["kind"] != "sale":
         raise Invalid("Only sales can be refunded.")
     if not reason or len(reason.strip()) < 5:
         raise Invalid("Explain why the goods are being refunded.")
-    originals = {r["id"]: r for r in t.sql("SELECT * FROM motion.pos_sale_line WHERE pos_sale_id=%s", (sale_id,))}
-    pending = t.sql("""SELECT payload FROM motion.approval_request WHERE action_type='refund' AND status IN ('pending','approved')
-                       AND (payload->>'sale_id')::int = %s""", (sale_id,))
-    reserved: dict[int, Decimal] = {}
-    for p in pending:
-        for ln in p["payload"]["lines"]:
-            reserved[int(ln["line_id"])] = reserved.get(int(ln["line_id"]), Decimal(0)) + Decimal(ln["quantity"])
-    amount = Decimal(0)
-    clean = []
-    for ln in lines:
-        lid = int(ln["line_id"])
-        q = common.qty(ln["quantity"])
-        orig = originals.get(lid)
-        if not orig:
-            raise Invalid("Line does not belong to this sale.")
-        left = common.qty(orig["quantity"]) - common.qty(orig["refunded_qty"]) - reserved.get(lid, Decimal(0))
-        if q <= 0 or q > left:
-            raise Invalid(f"Refund quantity exceeds what can still be refunded ({left}).")
-        amount += _line_amount(q, Decimal(orig["unit_price"]))
-        clean.append({"line_id": lid, "quantity": str(q), "product_id": orig["product_id"]})
-    if not clean:
-        raise Invalid("Select at least one line to refund.")
+    other = _open_refund(sale_id)
+    if other:
+        raise Conflict(f"Refund {other['ref']} for this receipt is still open. Complete or cancel it first.")
+    plan, amount = _refund_plan(sale, lines)
+    _refund_tenders(sale, amount)  # refuse early what the till could not pay out
     return approvals.submit(actor, action_type="refund", branch_id=sale["branch_id"], amount=amount,
                             title=f"Refund on receipt {sale['number']}",
-                            payload={"sale_id": sale_id, "number": sale["number"], "lines": clean}, justification=reason)
+                            payload={"sale_id": sale_id, "number": sale["number"],
+                                     "lines": [{k: v for k, v in ln.items() if k != "orig"} for ln in plan]},
+                            justification=reason)
 
 
 def execute_refund(actor: Principal, *, approval_id: int, register_id: int, idempotency_key: str,
                    _sale_date=None) -> dict:
     actor.require("pos.refund.execute", action="pos.refund.execute")
+    request = {"approval_id": int(approval_id), "register_id": int(register_id)}
+    replay = idempotency.claim("pos.refund", actor, idempotency_key, request)
+    if replay:
+        return receipt(actor, int(replay), replayed=True)
     reg = common.register(register_id)
     actor.require_branch(reg["branch_id"], action="pos.refund.execute")
+    shift = _hold_shift(actor, register_id, purpose="to pay out the refund")
     req = approvals.require_approved(approval_id, "refund", branch_id=reg["branch_id"])
-    if req["consumed_at"]:
-        raise Conflict("This refund has already been paid out.")
-    shift = t.sql_one("SELECT * FROM motion.shift WHERE cashier_id=%s AND register_id=%s AND status='open'",
-                      (actor.user_id, register_id))
-    if not shift:
-        raise Conflict("Open a shift on this register to pay out the refund.")
-    sale = _sale_row(int(req["payload"]["sale_id"]))
-    if sale["kind"] != "sale" or sale["branch_id"] != req["branch_id"]:
+    sale = t.sql_one("SELECT * FROM motion.pos_sale WHERE id=%s FOR UPDATE", (int(req["payload"]["sale_id"]),))
+    if not sale or sale["kind"] != "sale" or sale["branch_id"] != req["branch_id"]:
         raise Conflict("The approved refund no longer matches its original sale.")
-    lines = []
-    seen: set[int] = set()
-    approved_amount = Decimal(0)
-    for ln in req["payload"]["lines"]:
-        orig = t.sql_one("SELECT * FROM motion.pos_sale_line WHERE id=%s FOR UPDATE", (int(ln["line_id"]),))
-        q = common.qty(ln["quantity"])
-        # C1: every line must belong to the approved receipt, once, and still be refundable.
-        if not orig or orig["pos_sale_id"] != sale["id"] or orig["id"] in seen or orig["quantity"] <= 0:
-            raise Conflict("The approved refund lines do not match the original receipt.")
-        seen.add(orig["id"])
-        if q <= 0 or q > common.qty(orig["quantity"]) - common.qty(orig["refunded_qty"]):
-            raise Conflict("Part of this refund has already been paid out; request a new refund.")
-        approved_amount += _line_amount(q, Decimal(orig["unit_price"]))
-        # CHECK (refunded_qty <= quantity) makes a duplicate refund impossible even under a race.
-        t.execute("UPDATE motion.pos_sale_line SET refunded_qty = refunded_qty + %s WHERE id=%s", (q, orig["id"]))
-        lines.append({"product_id": orig["product_id"], "quantity": -q, "unit_gross": Decimal(orig["unit_price"]),
-                      "list_gross": Decimal(orig["unit_price"]), "discount_pct": 0, "refund_of_line": orig["id"]})
-    total = sum((_line_amount(-ln["quantity"], ln["unit_gross"]) for ln in lines), Decimal(0))
-    if common.money(approved_amount) != common.money(req["amount"]):
+    try:
+        plan, total = _refund_plan(sale, req["payload"]["lines"])
+    except Invalid:
+        raise Conflict("Part of this refund has already been paid out; request a new refund.") from None
+    # The amounts must be exactly what the manager approved (C1/H3).
+    approved = {int(x["line_id"]): x for x in req["payload"]["lines"]}
+    changed = common.money(total) != common.money(req["amount"])
+    for ln in plan:
+        a = approved[ln["line_id"]]
+        if "gross" in a and (Decimal(a["gross"]), Decimal(a["tax"])) != (Decimal(ln["gross"]), Decimal(ln["tax"])):
+            changed = True  # requests made before per-line amounts existed are checked on the total only
+    if changed:
         raise Conflict("The refund amount no longer matches what was approved; request a new refund.")
+    lines = []
+    for ln in plan:
+        orig, q, gross, tax = ln["orig"], Decimal(ln["quantity"]), Decimal(ln["gross"]), Decimal(ln["tax"])
+        t.execute("""UPDATE motion.pos_sale_line SET refunded_qty = refunded_qty + %s, refunded_gross = refunded_gross + %s,
+                     refunded_tax = refunded_tax + %s WHERE id=%s""", (q, gross, tax, orig["id"]))
+        lines.append({"product_id": orig["product_id"], "quantity": -q,
+                      "unit_gross": (gross / q).quantize(Decimal("0.0001")),
+                      "unit_net": ((gross - tax) / q).quantize(Decimal("0.0001")),
+                      "tax_ids": orig["tax_ids"], "amount": -gross,
+                      "list_gross": Decimal(orig["unit_price"]), "discount_pct": 0, "refund_of_line": orig["id"]})
     cashier = {"id": actor.user_id, "tryton_user_id": actor.tryton_user_id, "tryton_employee_id": actor.tryton_employee_id}
-    result = post_sale(register=reg, cashier=cashier, lines=lines, payments=[{"method": "cash", "amount": -total}],
-                       sale_date=_sale_date or common.today(), idempotency_key=idempotency_key, source="online", shift_id=shift["id"],
-                       enforce_stock=False, kind="refund", refund_of=sale["id"], approval_id=approval_id)
+    tenders = _refund_tenders(sale, total)
+    result = post_sale(register=reg, cashier=cashier, lines=lines, payments=tenders,
+                       sale_date=_sale_date or common.today(),
+                       idempotency_key=idempotency.internal_key("pos.refund", actor, idempotency_key), source="online",
+                       shift_id=shift["id"], enforce_stock=False, kind="refund", refund_of=sale["id"],
+                       approval_id=approval_id, cash_session_id=shift["tryton_session_id"])
     approvals.mark_executed(approval_id, actor=actor, result_type="pos_sale", result_id=result["id"])
+    idempotency.complete("pos.refund", actor, idempotency_key, request, result_type="pos_sale", result_id=result["id"])
     record(actor=actor, action="pos.refund.execute", target_type="pos_sale", target_id=result["number"],
            branch_id=reg["branch_id"], amount=total, reason=req["justification"],
-           after={"original": sale["number"], "approval": req["ref"]})
+           after={"original": sale["number"], "approval": req["ref"], "tenders": [p["method"] for p in tenders]})
     return receipt(actor, result["id"])
 
 
@@ -604,7 +714,7 @@ def receipt(actor: Principal, pos_sale_id: int, replayed: bool = False) -> dict:
                      JOIN product_product pp ON pp.id=l.product_id JOIN product_template pt ON pt.id=pp.template
                      JOIN product_uom u ON u.id=pt.default_uom WHERE l.pos_sale_id=%s ORDER BY l.id""", (pos_sale_id,))
     for ln in lines:
-        ln["amount"] = _line_amount(Decimal(ln["quantity"]), Decimal(ln["unit_price"]))
+        ln["amount"] = ln["line_gross"]
     meta = t.sql_one("""SELECT p.name AS register_name, b.name AS branch_name, u.full_name AS cashier_name,
                                ss.move, am.number AS journal_entry
                         FROM motion.pos_sale s JOIN sale_point p ON p.id=s.register_id JOIN motion_branch b ON b.id=s.branch_id

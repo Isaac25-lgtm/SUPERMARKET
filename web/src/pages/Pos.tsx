@@ -12,17 +12,38 @@ import {
   errorText, useToast,
 } from '../components/ui'
 import { dateTime, money, num, qty } from '../lib/format'
+import { lineAmount, unitAfterDiscount } from '../lib/money'
 import { barcodeCandidates, beep, listenForScanner } from '../lib/scanner'
 
 interface Item { id: number; name: string; sku: string | null; barcode: string | null; barcodes?: string[]; plu: string | null; category: string | null
   uom: string; sold_by_weight: boolean; price: string; vat: boolean; on_hand: string }
 interface Catalog { register: { id: number; name: string; branch_id: number }; items: Item[]; policy: { cashier_max_discount_pct: number; receipt_footer?: string } }
 interface Shift { id: number; register_id: number; register_name: string; branch_name: string; opened_at: string; opening_float: string
-  expected_cash_now?: string; sales: number; refunds: number; net_total: string; interrupted: boolean }
+  expected_cash_now?: string; sales: number; refunds: number; net_total?: string; interrupted: boolean }
 interface Line { product: Item; quantity: number; discount_pct: number }
 interface Payment { method: 'cash' | 'mobile_money' | 'card'; amount: string; reference?: string }
 
-const lineTotal = (l: Line) => Math.round(l.quantity * Math.round(num(l.product.price) * (100 - l.discount_pct) / 100))
+// Codex H2: one idempotency key per basket. It survives a failed request and a page reload,
+// so re-submitting the same basket replays the receipt instead of charging twice.
+const PENDING_TTL_MS = 15 * 60_000
+function basketKey(registerId: number, lines: Line[], overrideId: number | null): string {
+  const sig = JSON.stringify([overrideId, lines.map((l) => [l.product.id, l.quantity, l.discount_pct])])
+  const slot = `motion.pos.pending.${registerId}`
+  try {
+    const saved = JSON.parse(localStorage.getItem(slot) ?? 'null') as { sig: string; key: string; at: number } | null
+    if (saved && saved.sig === sig && Date.now() - saved.at < PENDING_TTL_MS) return saved.key
+    const key = uuid()
+    localStorage.setItem(slot, JSON.stringify({ sig, key, at: Date.now() }))
+    return key
+  } catch {
+    return uuid()
+  }
+}
+function clearBasketKey(registerId: number) {
+  try { localStorage.removeItem(`motion.pos.pending.${registerId}`) } catch { /* storage unavailable */ }
+}
+
+const lineTotal = (l: Line) => lineAmount(l.quantity, unitAfterDiscount(num(l.product.price), l.discount_pct))
 
 export default function PosPage() {
   const shiftQ = useQuery({ queryKey: ['pos-shift'], queryFn: () => api.get<{ shift: Shift | null }>('/api/pos/shift') })
@@ -163,7 +184,7 @@ function Till({ shift }: { shift: Shift }) {
     [payOpen, weighFor, overrideOpen])
 
   const total = lines.reduce((s, l) => s + lineTotal(l), 0)
-  const discount = lines.reduce((s, l) => s + Math.round(l.quantity * num(l.product.price)) - lineTotal(l), 0)
+  const discount = lines.reduce((s, l) => s + lineAmount(l.quantity, num(l.product.price)) - lineTotal(l), 0)
   const needsOverride = lines.some((l) => l.discount_pct > maxDisc) && !overrideId
 
   return (
@@ -264,7 +285,7 @@ function WeighModal({ item, onClose, onAdd }: { item: Item; onClose: () => void;
   const n = num(kg)
   return (
     <Modal open onOpenChange={(v) => !v && onClose()} title={item.name} description={`${money(item.price)} per kg · enter the weight from the scale`}
-      footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={n <= 0} onClick={() => onAdd(Math.round(n * 1000) / 1000)}>Add {n > 0 ? money(Math.round(n * num(item.price))) : ''}</Button></>}>
+      footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={n <= 0} onClick={() => onAdd(Math.round(n * 1000) / 1000)}>Add {n > 0 ? money(lineAmount(n, num(item.price))) : ''}</Button></>}>
       <form onSubmit={(e) => { e.preventDefault(); if (n > 0) onAdd(Math.round(n * 1000) / 1000) }}>
         <Field label="Weight (kg)" htmlFor="kg" hint="Up to 3 decimals, e.g. 1.250. Scale labels starting with 2 are read automatically when scanned.">
           <Input id="kg" autoFocus inputMode="decimal" value={kg} onChange={(e) => setKg(e.target.value.replace(/[^\d.]/g, ''))} className="h-12 text-lg" />
@@ -302,8 +323,7 @@ function OverrideModal({ registerId, lines, onClose, onApproved }: { registerId:
 function PayModal({ total, lines, registerId, overrideId, onClose, onDone }: {
   total: number; lines: Line[]; registerId: number; overrideId: number | null; onClose: () => void; onDone: (r: Record<string, unknown>) => void
 }) {
-  // One key per payment attempt: retries of the same submit cannot double-charge.
-  const keyRef = useRef(uuid())
+  const [saleKey] = useState(() => basketKey(registerId, lines, overrideId))
   const [payments, setPayments] = useState<Payment[]>([])
   const [cash, setCash] = useState('')
   const [method, setMethod] = useState<'mobile_money' | 'card'>('mobile_money')
@@ -314,11 +334,11 @@ function PayModal({ total, lines, registerId, overrideId, onClose, onDone }: {
   const change = Math.max(0, num(cash) - due)
   const m = useMutation({
     mutationFn: () => api.post<Record<string, unknown>>('/api/pos/sales', {
-      register_id: registerId, idempotency_key: keyRef.current, override_approval_id: overrideId,
+      register_id: registerId, idempotency_key: saleKey, override_approval_id: overrideId,
       lines: lines.map((l) => ({ product_id: l.product.id, quantity: l.quantity, discount_pct: l.discount_pct })),
       payments: [...payments, ...(due > 0 ? [{ method: 'cash', amount: String(num(cash)) }] : [])],
     }),
-    onSuccess: onDone,
+    onSuccess: (r) => { clearBasketKey(registerId); onDone(r) },
   })
   const quick = Array.from(new Set([due, Math.ceil(due / 1000) * 1000, Math.ceil(due / 5000) * 5000, Math.ceil(due / 10000) * 10000, Math.ceil(due / 50000) * 50000].filter((v) => v > 0))).slice(0, 5)
   const canPay = due === 0 || num(cash) >= due
@@ -404,7 +424,7 @@ function Refunds({ shift }: { shift: Shift }) {
     onSuccess: () => { toast('good', 'Refund request sent to the branch manager.'); setSale(null); setReason(''); setNumber(''); qc.invalidateQueries({ queryKey: ['my-refunds'] }) },
   })
   const execute = useMutation({
-    mutationFn: (approvalId: number) => api.post<Record<string, unknown>>('/api/pos/refunds', { approval_id: approvalId, register_id: shift.register_id, idempotency_key: uuid() }),
+    mutationFn: (approvalId: number) => api.post<Record<string, unknown>>('/api/pos/refunds', { approval_id: approvalId, register_id: shift.register_id, idempotency_key: `refund-approval-${approvalId}` }),
     onSuccess: (r) => { setReceipt(r); qc.invalidateQueries({ queryKey: ['my-refunds'] }); qc.invalidateQueries({ queryKey: ['pos-shift'] }) },
     onError: (e) => toast('bad', errorText(e)),
   })
@@ -475,7 +495,7 @@ function CloseShift({ shift, onDone }: { shift: Shift; onDone: () => void }) {
   return (
     <div className="mx-auto max-w-xl">
       <Card>
-        <CardHeader title="Close shift" subtitle={`${shift.sales} sales · ${shift.refunds} refunds · net ${money(shift.net_total)}`} icon={<LogOut className="size-4" />} />
+        <CardHeader title="Close shift" subtitle={`${shift.sales} sales · ${shift.refunds} refunds · count the drawer before you see the expected total`} icon={<LogOut className="size-4" />} />
         <form className="space-y-4 p-5" onSubmit={(e) => { e.preventDefault(); m.mutate() }}>
           <Notice>Count the drawer <b>before</b> looking at the expected amount. The system compares your count with expected cash and records any difference.</Notice>
           <Field label="Cash counted in drawer (UGX)" htmlFor="cc"><Input id="cc" inputMode="numeric" value={counted} onChange={(e) => setCounted(e.target.value.replace(/[^\d]/g, ''))} className="h-12 text-lg" /></Field>

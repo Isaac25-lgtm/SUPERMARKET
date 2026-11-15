@@ -78,6 +78,20 @@ class SalePointSale(metaclass=PoolMeta):
         return move
 
 
+class SalePointSaleLine(metaclass=PoolMeta):
+    __name__ = 'sale.point.sale.line'
+
+    @property
+    def taxes(self):
+        # A refund reverses the VAT of the original sale line: the platform passes the
+        # original tax ids per product in the context (refunds after a tax change).
+        fixed = Transaction().context.get('motion_line_taxes') or {}
+        ids = fixed.get(str(self.product.id)) if self.product else None
+        if ids is not None:
+            return Pool().get('account.tax').browse(ids)
+        return super().taxes
+
+
 class CashTransfer(metaclass=PoolMeta):
     __name__ = 'sale.point.cash.transfer'
 

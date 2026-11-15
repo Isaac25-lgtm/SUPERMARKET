@@ -24,7 +24,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 from .. import tryton as t
-from ..errors import Invalid
+from ..errors import Conflict, Invalid
 from ..security import Principal
 from . import common
 
@@ -355,17 +355,33 @@ def trial_balance(actor: Principal) -> dict:
     return {"accounts": rows, "total_debit": d, "total_credit": c, "balanced": d == c}
 
 
-def bank_deposit(actor: Principal, *, branch_id: int, amount: Decimal, date: dt.date, reference: str) -> dict:
-    """Bank the takings held in the safe: Dr bank / Cr safe (branch-stamped journal entry)."""
+def bank_deposit(actor: Principal, *, branch_id: int, amount: Decimal, date: dt.date, reference: str,
+                 idempotency_key: str) -> dict:
+    """Bank the takings held in the safe: Dr bank / Cr safe (branch-stamped journal entry).
+
+    Codex H2: a retried submission (same key, same slip) returns the original entry, and
+    a bank slip reference can be posted only once per branch."""
     from ..audit import record
+    from . import idempotency
 
     actor.require("payment.record", action="finance.bank_deposit")
+    request = {"branch_id": int(branch_id), "amount": common.money(amount), "date": date,
+               "reference": (reference or "").strip().upper()}
+    replay = idempotency.claim("finance.bank_deposit", actor, idempotency_key, request)
+    if replay:
+        row = t.sql_one("SELECT number, branch FROM account_move WHERE id=%s", (int(replay),))
+        actor.require_branch(row["branch"], action="finance.bank_deposit")
+        return {"move": row["number"], "amount": request["amount"], "replayed": True}
     actor.require_branch(branch_id, action="finance.bank_deposit")
     amount = common.money(amount)
     if amount <= 0:
         raise Invalid("Amount must be positive.")
     if not reference or len(reference.strip()) < 3:
         raise Invalid("Enter the bank slip reference.")
+    dup = t.sql_one("""SELECT number FROM account_move WHERE branch=%s AND upper(description)=%s AND state='posted'""",
+                    (branch_id, f"BANK DEPOSIT {request['reference']}"))
+    if dup:
+        raise Conflict(f"Bank slip {reference.strip()} is already recorded for this branch ({dup['number']}).")
     safe = t.sql_one("""SELECT COALESCE(sum(l.debit - l.credit), 0) AS b FROM account_move_line l JOIN account_move m ON m.id=l.move
                         JOIN account_account a ON a.id=l.account WHERE m.state='posted' AND a.code='1.1.1.02' AND m.branch=%s""",
                      (branch_id,))["b"]
@@ -384,6 +400,8 @@ def bank_deposit(actor: Principal, *, branch_id: int, amount: Decimal, date: dt.
                 {"account": common.account_by_code("1.1.1.02").id, "debit": Decimal(0), "credit": amount}])]}])
         Move.post([move])
         common.expect_state(move, "posted", what="bank deposit")
+    idempotency.complete("finance.bank_deposit", actor, idempotency_key, request, result_type="account.move",
+                         result_id=move.id)
     record(actor=actor, action="finance.bank_deposit", target_type="account.move", target_id=move.number,
            branch_id=branch_id, amount=amount, reason=reference)
     return {"move": move.number, "amount": amount}
