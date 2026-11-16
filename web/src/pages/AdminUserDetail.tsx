@@ -60,7 +60,7 @@ export default function AdminUserDetailPage() {
       {action && <ActionModal userId={user.id} action={action} name={user.full_name} onClose={() => setAction(null)} onDone={(pw) => { setAction(null); if (pw) setTempPw(pw); toast('good', 'Done.'); refresh() }} />}
       {tempPw && <Modal open onOpenChange={(v) => !v && setTempPw(null)} title="Temporary password" footer={<Button variant="primary" onClick={() => setTempPw(null)}>Done</Button>}>
         <Notice tone="warn">Shown once. Give it to the user in person; they must change it at next sign-in. All their sessions were ended.</Notice>
-        <div className="mt-4 rounded-xl border border-line bg-surface-2 p-4 text-center font-mono text-xl tracking-wider">{tempPw}</div>
+        <div className="mt-4 rounded-xl border border-line-strong bg-surface-2 p-4 text-center font-mono text-xl tracking-wider">{tempPw}</div>
       </Modal>}
     </div>
   )

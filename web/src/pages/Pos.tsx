@@ -210,7 +210,7 @@ function Till({ shift }: { shift: Shift }) {
             const out = num(i.on_hand) <= 0
             return (
               <button key={i.id} onClick={() => (i.sold_by_weight ? setWeighFor(i) : add(i))} disabled={out}
-                className="group flex min-h-[92px] flex-col justify-between rounded-xl border border-line bg-surface p-3 text-left shadow-[var(--shadow-card)] transition hover:border-accent/50 hover:shadow-md active:scale-[0.99] disabled:opacity-45">
+                className="group flex min-h-[92px] flex-col justify-between rounded-xl border border-line-strong bg-surface p-3 text-left shadow-[var(--shadow-card)] transition hover:border-accent/50 hover:shadow-md active:scale-[0.99] disabled:opacity-45">
                 <span className="line-clamp-2 text-[13.5px] font-medium leading-snug">{i.name}</span>
                 <span className="mt-2 flex items-end justify-between gap-1">
                   <span className="tabular text-[15px] font-semibold">{money(i.price, { currency: false })}{i.sold_by_weight && <span className="text-[11px] font-normal text-muted">/kg</span>}</span>

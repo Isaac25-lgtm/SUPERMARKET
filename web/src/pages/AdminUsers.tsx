@@ -73,7 +73,7 @@ function CreateUser({ roles, branches, onClose }: { roles: R[]; branches: R[]; o
     return (
       <Modal open onOpenChange={(v) => !v && onClose()} title="User created" footer={<Button variant="primary" onClick={onClose}>Done</Button>}>
         <Notice tone="warn">Give this temporary password to <b>{created.username}</b> in person. It is shown only once and must be changed at first sign-in.</Notice>
-        <div className="mt-4 rounded-xl border border-line bg-surface-2 p-4 text-center font-mono text-xl tracking-wider" data-testid="temp-password">{created.temporary_password}</div>
+        <div className="mt-4 rounded-xl border border-line-strong bg-surface-2 p-4 text-center font-mono text-xl tracking-wider" data-testid="temp-password">{created.temporary_password}</div>
       </Modal>
     )
   }

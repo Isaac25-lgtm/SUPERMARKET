@@ -131,7 +131,7 @@ function DemoPicker({ brand }: { brand: string }) {
               <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {members.map((a) => (
                   <button key={a.username} onClick={() => go(a.username)} disabled={!!busy}
-                    className="group flex flex-col rounded-[var(--radius-card)] border border-line bg-surface p-4 text-left shadow-[var(--shadow-card)] transition hover:border-accent/60 hover:shadow-md disabled:opacity-60">
+                    className="group flex flex-col rounded-[var(--radius-card)] border border-line-strong bg-surface p-4 text-left shadow-[var(--shadow-card)] transition hover:border-accent/60 hover:shadow-md disabled:opacity-60">
                     <span className="text-[12px] font-semibold uppercase tracking-wide text-accent">{ROLE_LABELS[primaryRole(a.roles)]}</span>
                     <span className="mt-1 text-[15px] font-semibold">{a.full_name.replace(/\s*\(TEST.*\)/, '')}</span>
                     <span className="mt-0.5 text-[12.5px] text-muted">{a.username} · {a.all_branches ? 'all branches' : a.branches.join(', ') || 'no branch'}</span>

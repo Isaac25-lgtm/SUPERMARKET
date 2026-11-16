@@ -59,7 +59,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 
 export function Card({ className, children, ...rest }: { className?: string; children: ReactNode } & React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={clsx('rounded-[var(--radius-card)] border border-line bg-surface shadow-[var(--shadow-card)]', className)} {...rest}>
+    <div className={clsx('rounded-[var(--radius-card)] border border-line-strong bg-surface shadow-[var(--shadow-card)]', className)} {...rest}>
       {children}
     </div>
   )
@@ -242,7 +242,7 @@ export function Modal({ open, onOpenChange, title, description, children, footer
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/35 backdrop-blur-[2px]" />
         <Dialog.Content
-          className={clsx('fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-line bg-surface shadow-[var(--shadow-pop)]',
+          className={clsx('fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-line-strong bg-surface shadow-[var(--shadow-pop)]',
             wide ? 'max-w-3xl' : 'max-w-lg')}
         >
           <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
@@ -285,7 +285,7 @@ export function Td({ children, className, align = 'left', mono, title }: { child
 
 export function Tabs<T extends string>({ value, onChange, items }: { value: T; onChange: (v: T) => void; items: { value: T; label: string; count?: number }[] }) {
   return (
-    <div role="tablist" className="inline-flex flex-wrap gap-1 rounded-xl border border-line bg-surface p-1">
+    <div role="tablist" className="inline-flex flex-wrap gap-1 rounded-xl border border-line-strong bg-surface p-1">
       {items.map((it) => (
         <button key={it.value} role="tab" aria-selected={value === it.value} onClick={() => onChange(it.value)}
           className={clsx('rounded-lg px-3 py-1.5 text-[13px] font-medium transition',

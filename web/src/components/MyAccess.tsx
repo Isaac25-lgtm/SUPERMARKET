@@ -22,7 +22,7 @@ function Section({ id, title, count, open, onToggle, children }: {
   id: string; title: React.ReactNode; count?: string; open: boolean; onToggle: () => void; children: React.ReactNode
 }) {
   return (
-    <div className="rounded-xl border border-line">
+    <div className="rounded-xl border border-line-strong">
       <button type="button" onClick={onToggle} aria-expanded={open} aria-controls={id}
         className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13.5px] font-semibold hover:bg-surface-2">
         <span className="flex-1">{title}</span>

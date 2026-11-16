@@ -44,7 +44,7 @@ export default function SystemPage() {
       {token && (
         <Modal open onOpenChange={(v) => !v && setToken(null)} title="Device token" footer={<Button variant="primary" onClick={() => setToken(null)}>I have stored it</Button>}>
           <Notice tone="warn">Copy this into the branch edge's configuration (MOTION_EDGE_TOKEN). It is shown only once; only its hash is stored. Revoke the device if it is lost.</Notice>
-          <div className="mt-4 break-all rounded-xl border border-line bg-surface-2 p-4 font-mono text-[13px]">{token}</div>
+          <div className="mt-4 break-all rounded-xl border border-line-strong bg-surface-2 p-4 font-mono text-[13px]">{token}</div>
         </Modal>
       )}
     </div>

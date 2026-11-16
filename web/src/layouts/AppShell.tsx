@@ -149,7 +149,7 @@ export function AppShell() {
               </span>
             </Menu.Trigger>
             <Menu.Portal>
-              <Menu.Content align="end" sideOffset={6} className="z-50 min-w-[220px] rounded-xl border border-line bg-surface p-1.5 shadow-[var(--shadow-pop)]">
+              <Menu.Content align="end" sideOffset={6} className="z-50 min-w-[220px] rounded-xl border border-line-strong bg-surface p-1.5 shadow-[var(--shadow-pop)]">
                 <div className="px-2.5 py-2 text-[12px] text-muted">Signed in as <b className="text-ink">{me.username}</b><br />{me.roles.map((r) => ROLE_LABELS[r]).join(', ')}</div>
                 <Menu.Separator className="my-1 h-px bg-line" />
                 <Menu.Item onSelect={() => setAccessOpen('mine')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><ShieldCheck className="size-4" />My access</Menu.Item>
