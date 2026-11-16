@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactNode } from 'react'
+import { lazy, Suspense, type ComponentType, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { primaryRole, useAuth } from '../auth/auth'
 import { LoadingBlock } from '../components/ui'
@@ -6,28 +6,45 @@ import { AppShell } from '../layouts/AppShell'
 import { LoginPage } from '../pages/Login'
 import { ChangePasswordPage } from '../pages/ChangePassword'
 
-const DashboardPage = lazy(() => import('../pages/Dashboard'))
-const PosPage = lazy(() => import('../pages/Pos'))
-const ApprovalsPage = lazy(() => import('../pages/Approvals'))
-const ApprovalDetailPage = lazy(() => import('../pages/ApprovalDetail'))
-const StockPage = lazy(() => import('../pages/Stock'))
-const ProductPage = lazy(() => import('../pages/Product'))
-const TransfersPage = lazy(() => import('../pages/Transfers'))
-const TransferDetailPage = lazy(() => import('../pages/TransferDetail'))
-const ProcurementPage = lazy(() => import('../pages/Procurement'))
-const OrderDetailPage = lazy(() => import('../pages/OrderDetail'))
-const FinancePage = lazy(() => import('../pages/Finance'))
-const PayablesPage = lazy(() => import('../pages/Payables'))
-const InvoiceDetailPage = lazy(() => import('../pages/InvoiceDetail'))
-const SalesPage = lazy(() => import('../pages/Sales'))
-const ShiftsPage = lazy(() => import('../pages/Shifts'))
-const ReportsPage = lazy(() => import('../pages/Reports'))
-const InsightsPage = lazy(() => import('../pages/Insights'))
-const UsersPage = lazy(() => import('../pages/AdminUsers'))
-const UserDetailPage = lazy(() => import('../pages/AdminUserDetail'))
-const PoliciesPage = lazy(() => import('../pages/AdminPolicies'))
-const AuditPage = lazy(() => import('../pages/Audit'))
-const SystemPage = lazy(() => import('../pages/System'))
+// After a deploy, a tab that was already open asks for page chunks that no longer exist
+// ("Failed to fetch dynamically imported module") and would render a blank page. Reload once
+// to pick up the new build (index.html is served no-cache); a second failure surfaces normally.
+const CHUNK_RELOAD_KEY = 'motion.chunk-reload'
+function lazyPage(load: () => Promise<{ default: ComponentType }>) {
+  return lazy(() => load().catch((err: unknown) => {
+    let last = 0
+    try { last = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY) ?? 0) } catch { /* storage unavailable */ }
+    if (Date.now() - last > 30_000) {
+      try { sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now())) } catch { /* ignore */ }
+      window.location.reload()
+      return new Promise<{ default: ComponentType }>(() => {})
+    }
+    throw err
+  }))
+}
+
+const DashboardPage = lazyPage(() => import('../pages/Dashboard'))
+const PosPage = lazyPage(() => import('../pages/Pos'))
+const ApprovalsPage = lazyPage(() => import('../pages/Approvals'))
+const ApprovalDetailPage = lazyPage(() => import('../pages/ApprovalDetail'))
+const StockPage = lazyPage(() => import('../pages/Stock'))
+const ProductPage = lazyPage(() => import('../pages/Product'))
+const TransfersPage = lazyPage(() => import('../pages/Transfers'))
+const TransferDetailPage = lazyPage(() => import('../pages/TransferDetail'))
+const ProcurementPage = lazyPage(() => import('../pages/Procurement'))
+const OrderDetailPage = lazyPage(() => import('../pages/OrderDetail'))
+const FinancePage = lazyPage(() => import('../pages/Finance'))
+const PayablesPage = lazyPage(() => import('../pages/Payables'))
+const InvoiceDetailPage = lazyPage(() => import('../pages/InvoiceDetail'))
+const SalesPage = lazyPage(() => import('../pages/Sales'))
+const ShiftsPage = lazyPage(() => import('../pages/Shifts'))
+const ReportsPage = lazyPage(() => import('../pages/Reports'))
+const InsightsPage = lazyPage(() => import('../pages/Insights'))
+const UsersPage = lazyPage(() => import('../pages/AdminUsers'))
+const UserDetailPage = lazyPage(() => import('../pages/AdminUserDetail'))
+const PoliciesPage = lazyPage(() => import('../pages/AdminPolicies'))
+const AuditPage = lazyPage(() => import('../pages/Audit'))
+const SystemPage = lazyPage(() => import('../pages/System'))
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { me, loading } = useAuth()
