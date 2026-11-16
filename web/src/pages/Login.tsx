@@ -8,6 +8,7 @@ import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { z } from 'zod'
 import { api } from '../api/client'
 import { ROLE_LABELS, primaryRole, useAuth } from '../auth/auth'
+import { RoleIcon } from '../components/RoleIcon'
 import { Button, ErrorBox, Field, Input, TestDataBadge } from '../components/ui'
 
 const schema = z.object({
@@ -125,15 +126,21 @@ function DemoPicker({ brand }: { brand: string }) {
           if (!members.length) return null
           return (
             <section key={g.title} className="mt-7" aria-labelledby={`grp-${g.title}`}>
-              <h2 id={`grp-${g.title}`} className="text-[15px] font-semibold tracking-tight">
-                {g.title} <span className="ml-1 text-[12.5px] font-normal text-muted">{g.hint}</span>
+              <h2 id={`grp-${g.title}`} className="flex items-center gap-2.5 text-[15px] font-semibold tracking-tight">
+                <RoleIcon role={g.icon} size="sm" />
+                <span>{g.title} <span className="ml-1 text-[12.5px] font-normal text-muted">{g.hint}</span></span>
               </h2>
               <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {members.map((a) => (
                   <button key={a.username} onClick={() => go(a.username)} disabled={!!busy}
                     className="group flex flex-col rounded-[var(--radius-card)] border border-line-strong bg-surface p-4 text-left shadow-[var(--shadow-card)] transition hover:border-accent/60 hover:shadow-md disabled:opacity-60">
-                    <span className="text-[12px] font-semibold uppercase tracking-wide text-accent">{ROLE_LABELS[primaryRole(a.roles)]}</span>
-                    <span className="mt-1 text-[15px] font-semibold">{a.full_name.replace(/\s*\(TEST.*\)/, '')}</span>
+                    <span className="flex items-center gap-3">
+                      <RoleIcon role={primaryRole(a.roles)} size="lg" />
+                      <span className="min-w-0">
+                        <span className="block text-[12px] font-semibold uppercase tracking-wide text-accent">{ROLE_LABELS[primaryRole(a.roles)]}</span>
+                        <span className="mt-0.5 block truncate text-[15px] font-semibold">{a.full_name.replace(/\s*\(TEST.*\)/, '')}</span>
+                      </span>
+                    </span>
                     <span className="mt-0.5 text-[12.5px] text-muted">{a.username} · {a.all_branches ? 'all branches' : a.branches.join(', ') || 'no branch'}</span>
                     <span className="mt-3 text-[13px] font-medium text-accent group-hover:underline">{busy === a.username ? 'Signing in…' : 'Continue as this user →'}</span>
                   </button>
@@ -149,12 +156,12 @@ function DemoPicker({ brand }: { brand: string }) {
 }
 
 // Picker sections, in the order staff usually look for them.
-const GROUPS: { title: string; hint: string; roles: string[] }[] = [
-  { title: 'Managers', hint: 'Head Manager, General, Operations and Branch Managers', roles: ['owner', 'general_manager', 'operations_manager', 'branch_manager'] },
-  { title: 'Accountants', hint: 'Finance, payables and cash reconciliation', roles: ['accountant'] },
-  { title: 'Inventory', hint: 'Stock, products, receiving and transfers', roles: ['inventory_manager'] },
-  { title: 'Cashiers', hint: 'Point of sale tills', roles: ['cashier'] },
-  { title: 'Technical', hint: 'System administration only', roles: ['sysadmin'] },
+const GROUPS: { title: string; hint: string; icon: string; roles: string[] }[] = [
+  { title: 'Managers', hint: 'Head Manager, General, Operations and Branch Managers', icon: 'general_manager', roles: ['owner', 'general_manager', 'operations_manager', 'branch_manager'] },
+  { title: 'Accountants', hint: 'Finance, payables and cash reconciliation', icon: 'accountant', roles: ['accountant'] },
+  { title: 'Inventory', hint: 'Stock, products, receiving and transfers', icon: 'inventory_manager', roles: ['inventory_manager'] },
+  { title: 'Cashiers', hint: 'Point of sale tills', icon: 'cashier', roles: ['cashier'] },
+  { title: 'Technical', hint: 'System administration only', icon: 'sysadmin', roles: ['sysadmin'] },
 ]
 
 function SignedOutNotice() {

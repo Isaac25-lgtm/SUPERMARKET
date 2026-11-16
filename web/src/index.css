@@ -37,6 +37,17 @@
   --color-chart-4: #2563eb;
   --color-chart-5: #db2777;
 
+  /* One identity colour per role (icon tiles only; text stays in ink tokens). */
+  --color-role-owner: #a16207;
+  --color-role-general-manager: #4f46e5;
+  --color-role-accountant: #047857;
+  --color-role-operations-manager: #0369a1;
+  --color-role-inventory-manager: #c2410c;
+  --color-role-branch-manager: #0f766e;
+  --color-role-cashier: #a21caf;
+  --color-role-sysadmin: #475569;
+  --color-role-staff: #475569;
+
   --radius-card: 14px;
   --shadow-card: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 4px rgb(16 24 40 / 0.08);
   --shadow-pop: 0 12px 32px -8px rgb(16 24 40 / 0.18), 0 2px 6px rgb(16 24 40 / 0.06);
@@ -68,6 +79,15 @@
   --color-chart-3: #d97706;
   --color-chart-4: #3b82f6;
   --color-chart-5: #ec4899;
+  --color-role-owner: #facc15;
+  --color-role-general-manager: #a5b4fc;
+  --color-role-accountant: #6ee7b7;
+  --color-role-operations-manager: #7dd3fc;
+  --color-role-inventory-manager: #fdba74;
+  --color-role-branch-manager: #5eead4;
+  --color-role-cashier: #f0abfc;
+  --color-role-sysadmin: #cbd5e1;
+  --color-role-staff: #cbd5e1;
 }
 
 html, body, #root { height: 100%; }
@@ -84,6 +104,30 @@ body {
 .tabular { font-variant-numeric: tabular-nums; }
 :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 6px; }
 ::selection { background: var(--color-accent-soft); }
+
+/* Role icon tile: soft tinted gradient, hairline ring and a top highlight. --role is set per tile. */
+.role-tile {
+  --role: var(--color-accent);
+  color: var(--role);
+  background: linear-gradient(140deg,
+    color-mix(in oklab, var(--role) 22%, var(--color-surface)) 0%,
+    color-mix(in oklab, var(--role) 7%, var(--color-surface)) 100%);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--role) 30%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 0.55),
+    0 1px 2px rgb(16 24 40 / 0.08),
+    0 2px 6px -2px color-mix(in oklab, var(--role) 35%, transparent);
+}
+[data-theme="dark"] .role-tile {
+  background: linear-gradient(140deg,
+    color-mix(in oklab, var(--role) 26%, var(--color-surface)) 0%,
+    color-mix(in oklab, var(--role) 9%, var(--color-surface)) 100%);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--role) 38%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 2px 8px -2px rgb(0 0 0 / 0.5);
+}
+@media (forced-colors: active) { .role-tile { border: 1px solid CanvasText; } }
 
 @keyframes shimmer { 0% { background-position: -400px 0 } 100% { background-position: 400px 0 } }
 .skeleton {

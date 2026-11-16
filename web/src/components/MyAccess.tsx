@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
-import { Building2, Check, ChevronDown, ClipboardCheck, Minus, ShieldCheck, Users } from 'lucide-react'
+import { Building2, Check, ChevronDown, ClipboardCheck, Minus, Users } from 'lucide-react'
 import { useState } from 'react'
 import { api } from '../api/client'
+import { RoleIcon } from './RoleIcon'
 import { Badge, Button, ErrorBox, LoadingBlock, Modal, Tabs } from './ui'
 
 interface Perm { code: string; label: string; granted: boolean }
@@ -64,8 +65,8 @@ function MyAccessView() {
           <Section id="acc-roles" title={d.roles.length === 1 ? 'Role' : 'Roles'} count={String(d.roles.length)} open={isOpen('roles')} onToggle={() => toggle('roles')}>
             <ul className="space-y-2">
               {d.roles.map((r) => (
-                <li key={r.code} className="flex gap-2.5">
-                  <ShieldCheck className="mt-0.5 size-4 shrink-0 text-accent" />
+                <li key={r.code} className="flex items-start gap-3">
+                  <RoleIcon role={r.code} size="md" />
                   <div><div className="text-[13.5px] font-medium">{r.name}</div><div className="text-[12.5px] text-muted">{r.description}</div></div>
                 </li>
               ))}
@@ -170,7 +171,7 @@ function AllRolesView() {
         <Section key={r.code} id={`role-${r.code}`} open={isOpen(r.code)}
           onToggle={() => setOpenRoles((o) => ({ ...o, [r.code]: !isOpen(r.code) }))}
           count={`${r.granted} of ${d.total}`}
-          title={<span className="flex flex-wrap items-center gap-2">{r.name}{mine.has(r.code) && <Badge tone="info">Your role</Badge>}</span>}>
+          title={<span className="flex flex-wrap items-center gap-2.5"><RoleIcon role={r.code} size="sm" />{r.name}{mine.has(r.code) && <Badge tone="info">Your role</Badge>}</span>}>
           <div className="space-y-3">
             <p className="text-[13px] text-ink-2">{r.description}</p>
             <div className="flex flex-wrap gap-1.5">

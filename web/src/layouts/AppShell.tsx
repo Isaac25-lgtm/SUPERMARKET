@@ -13,6 +13,7 @@ import { ROLE_LABELS, primaryRole, useAuth } from '../auth/auth'
 import { useIdleLogout } from '../auth/useIdleLogout'
 import { AskMotionFloater } from '../components/MotionChat'
 import { type AccessTab, MyAccessDialog } from '../components/MyAccess'
+import { RoleIcon } from '../components/RoleIcon'
 import { TestDataBadge } from '../components/ui'
 
 interface NavItem { to: string; label: string; icon: ReactNode; show: (can: (p: string) => boolean) => boolean; badge?: number }
@@ -140,8 +141,11 @@ export function AppShell() {
           <button onClick={toggleTheme} className="rounded-lg p-2 text-ink-2 hover:bg-surface-2" aria-label="Toggle dark mode">{theme === 'dark' ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}</button>
           <Menu.Root>
             <Menu.Trigger className="flex items-center gap-2.5 rounded-lg py-1 pl-1 pr-2 hover:bg-surface-2" aria-label="Account menu">
-              <span className="grid size-8 place-items-center rounded-full bg-accent-soft text-[12px] font-semibold text-accent-ink">
-                {me.full_name.split(' ').slice(0, 2).map((s) => s[0]).join('')}
+              <span className="relative">
+                <span className="grid size-8 place-items-center rounded-full bg-accent-soft text-[12px] font-semibold text-accent-ink">
+                  {me.full_name.split(' ').slice(0, 2).map((s) => s[0]).join('')}
+                </span>
+                <RoleIcon role={primaryRole(me.roles)} size="xs" className="absolute -bottom-1 -right-1.5 outline-2 outline-surface" />
               </span>
               <span className="hidden text-left leading-tight sm:block">
                 <span className="block max-w-[180px] truncate text-[13px] font-medium">{me.full_name.replace(/\s*\(TEST.*\)/, '')}</span>
