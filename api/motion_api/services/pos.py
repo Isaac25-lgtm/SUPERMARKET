@@ -629,10 +629,12 @@ def request_refund(actor: Principal, *, sale_id: int, lines: list[dict], reason:
         raise Conflict(f"Refund {other['ref']} for this receipt is still open. Complete or cancel it first.")
     plan, amount = _refund_plan(sale, lines)
     _refund_tenders(sale, amount)  # refuse early what the till could not pay out
+    names = common.product_names({ln["product_id"] for ln in plan})  # so the approver sees products, not line ids
     return approvals.submit(actor, action_type="refund", branch_id=sale["branch_id"], amount=amount,
                             title=f"Refund on receipt {sale['number']}",
                             payload={"sale_id": sale_id, "number": sale["number"],
-                                     "lines": [{k: v for k, v in ln.items() if k != "orig"} for ln in plan]},
+                                     "lines": [{**{k: v for k, v in ln.items() if k != "orig"},
+                                                "name": names.get(ln["product_id"], {}).get("name")} for ln in plan]},
                             justification=reason)
 
 

@@ -20,7 +20,7 @@ interface Item { id: number; name: string; sku: string | null; barcode: string |
 interface Catalog { register: { id: number; name: string; branch_id: number }; items: Item[]; policy: { cashier_max_discount_pct: number; receipt_footer?: string } }
 interface Shift { id: number; register_id: number; register_name: string; branch_name: string; opened_at: string; opening_float: string
   expected_cash_now?: string; sales: number; refunds: number; net_total?: string; interrupted: boolean }
-interface Line { product: Item; quantity: number; discount_pct: number }
+interface Line { product: Item; quantity: number; discount_pct: number; discount_text?: string }
 interface Payment { method: 'cash' | 'mobile_money' | 'card'; amount: string; reference?: string }
 
 // Codex H2: one idempotency key per basket. It survives a failed request and a page reload,
@@ -248,7 +248,7 @@ function Till({ shift }: { shift: Shift }) {
                 )}
                 <label className="ml-auto flex items-center gap-1 text-[12px] text-muted">
                   <Percent className="size-3.5" aria-hidden /><span className="sr-only">Discount percent</span>
-                  <input inputMode="decimal" value={l.discount_pct || ''} placeholder="0" onChange={(e) => { setOverrideId(null); const v = Math.min(100, Math.max(0, num(e.target.value))); setLines((ls) => ls.map((x, i) => i === idx ? { ...x, discount_pct: v } : x)) }}
+                  <input inputMode="decimal" value={l.discount_text ?? (l.discount_pct || '')} placeholder="0" onChange={(e) => { const t = e.target.value.trim(); if (!/^\d{0,3}(\.\d{0,2})?$/.test(t) || num(t) > 100) return; setOverrideId(null); setLines((ls) => ls.map((x, i) => i === idx ? { ...x, discount_pct: num(t), discount_text: t } : x)) }}
                     className="h-9 w-14 rounded-lg border border-line px-2 text-right text-[13px]" />
                 </label>
                 <button aria-label={`Remove ${l.product.name}`} className="grid size-9 place-items-center rounded-lg text-bad hover:bg-bad-soft" onClick={() => setLines((ls) => ls.filter((_, i) => i !== idx))}><Trash2 className="size-4" /></button>
@@ -410,7 +410,8 @@ function Refunds({ shift }: { shift: Shift }) {
   const toast = useToast()
   const [number, setNumber] = useState('')
   const [sale, setSale] = useState<Record<string, any> | null>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
-  const [pick, setPick] = useState<Record<number, number>>({})
+  // Raw text per line, so decimals like "0.5" can be typed; parsed and capped when sent.
+  const [pick, setPick] = useState<Record<number, string>>({})
   const [reason, setReason] = useState('')
   const [findErr, setFindErr] = useState<unknown>(null)
   const [receipt, setReceipt] = useState<Record<string, unknown> | null>(null)
@@ -420,7 +421,7 @@ function Refunds({ shift }: { shift: Shift }) {
     try { setSale(await api.get(`/api/pos/receipts/${encodeURIComponent(number.trim())}`)) } catch (err) { setFindErr(err) }
   }
   const request = useMutation({
-    mutationFn: () => api.post('/api/pos/refunds/requests', { sale_id: sale!.id, reason, lines: Object.entries(pick).filter(([, q]) => q > 0).map(([line_id, quantity]) => ({ line_id: Number(line_id), quantity })) }),
+    mutationFn: () => api.post('/api/pos/refunds/requests', { sale_id: sale!.id, reason, lines: Object.entries(pick).map(([line_id, q]) => ({ line_id: Number(line_id), quantity: num(q) })).filter((x) => x.quantity > 0) }),
     onSuccess: () => { toast('good', 'Refund request sent to the branch manager.'); setSale(null); setReason(''); setNumber(''); qc.invalidateQueries({ queryKey: ['my-refunds'] }) },
   })
   const execute = useMutation({
@@ -448,14 +449,14 @@ function Refunds({ shift }: { shift: Shift }) {
                     <li key={l.id} className="flex items-center justify-between gap-3 px-3 py-2 text-[13px]">
                       <div><div className="font-medium">{l.name}</div><div className="text-muted">{qty(l.quantity, l.uom)} sold · {qty(left, l.uom)} refundable · {money(l.unit_price)}</div></div>
                       <input aria-label={`Refund quantity for ${l.name}`} inputMode="decimal" disabled={left <= 0} value={pick[Number(l.id)] ?? ''} placeholder="0"
-                        onChange={(e) => setPick((p) => ({ ...p, [Number(l.id)]: Math.min(left, num(e.target.value)) }))} className="h-9 w-20 rounded-lg border border-line px-2 text-right" />
+                        onChange={(e) => { const v = e.target.value.trim(); if (/^\d*\.?\d{0,3}$/.test(v) && (v === '' || num(v) <= left)) setPick((p) => ({ ...p, [Number(l.id)]: v })) }} className="h-9 w-20 rounded-lg border border-line px-2 text-right" />
                     </li>
                   )
                 })}
               </ul>
               <Field label="Reason" htmlFor="rr"><Textarea id="rr" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="What is wrong with the goods?" /></Field>
               <ErrorBox error={request.error} />
-              <Button variant="primary" loading={request.isPending} disabled={reason.trim().length < 5 || !Object.values(pick).some((q) => q > 0)} onClick={() => request.mutate()}>Send for approval</Button>
+              <Button variant="primary" loading={request.isPending} disabled={reason.trim().length < 5 || !Object.values(pick).some((q) => num(q) > 0)} onClick={() => request.mutate()}>Send for approval</Button>
             </>
           )}
         </div>
