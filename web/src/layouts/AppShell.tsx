@@ -156,9 +156,9 @@ export function AppShell() {
               <Menu.Content align="end" sideOffset={6} className="z-50 min-w-[220px] rounded-xl border border-line-strong bg-surface p-1.5 shadow-[var(--shadow-pop)]">
                 <div className="px-2.5 py-2 text-[12px] text-muted">Signed in as <b className="text-ink">{me.username}</b><br />{me.roles.map((r) => ROLE_LABELS[r]).join(', ')}</div>
                 <Menu.Separator className="my-1 h-px bg-line" />
-                <Menu.Item onSelect={() => setAccessOpen('mine')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><ShieldCheck className="size-4" />My access</Menu.Item>
-                <Menu.Item onSelect={() => setAccessOpen('roles')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><Users className="size-4" />Roles &amp; permissions</Menu.Item>
-                {!meta?.open_demo && <Menu.Item onSelect={() => navigate('/account/password')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><KeyRound className="size-4" />Change password</Menu.Item>}
+                {!meta?.edge && <Menu.Item onSelect={() => setAccessOpen('mine')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><ShieldCheck className="size-4" />My access</Menu.Item>}
+                {!meta?.edge && <Menu.Item onSelect={() => setAccessOpen('roles')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><Users className="size-4" />Roles &amp; permissions</Menu.Item>}
+                {!meta?.open_demo && !meta?.edge && <Menu.Item onSelect={() => navigate('/account/password')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><KeyRound className="size-4" />Change password</Menu.Item>}
                 {meta?.open_demo && <Menu.Item onSelect={() => { void logout() }} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><Users className="size-4" />Switch demo account</Menu.Item>}
                 <Menu.Item onSelect={() => { void logout() }} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] text-bad outline-none data-[highlighted]:bg-bad-soft"><LogOut className="size-4" />Sign out</Menu.Item>
               </Menu.Content>
@@ -168,7 +168,7 @@ export function AppShell() {
         <main className="min-w-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[1440px] px-4 pb-24 pt-6 sm:px-6 lg:px-8"><Outlet /></div>
         </main>
-        <AskMotionFloater />
+        {!meta?.edge && <AskMotionFloater />}
         <MyAccessDialog open={accessOpen !== null} tab={accessOpen ?? 'mine'} onTab={setAccessOpen} onOpenChange={(v) => { if (!v) setAccessOpen(null) }} />
       </div>
     </div>

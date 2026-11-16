@@ -84,7 +84,7 @@ def test_offline_sales_sync_exactly_once(edge, ids, login):
             total = sum(((D(ln["quantity"]) * items[ln["product_id"]]).quantize(D("1")) for ln in lines), D(0))
             pays = [{"method": "mobile_money", "amount": str(total), "reference": f"MM{i}"}]
         r = service.sell(store, s, client_key=str(uuid.uuid4()), lines=lines, payments=pays)
-        assert r["status"] == "pending" and "-OFF-" in r["local_receipt_no"]
+        assert r["status"] == "pending" and "-B0" in r["local_receipt_no"]
         events.append(r["event_id"])
     # Central price change during the outage -> offline sales carry the old price.
     pr = login("inv.ruth").post(f"/api/catalog/products/{soda}/price", {"new_price": "2100", "reason": "Outage price-change test"})

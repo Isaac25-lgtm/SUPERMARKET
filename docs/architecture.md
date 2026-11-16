@@ -43,15 +43,21 @@ One database: Tryton tables in `public`, platform tables in `motion`. Bootstrap 
 End users never see the Tryton client. The React app is served by FastAPI on the same origin, so cookie auth works
 without CORS. The UI only *hides* what a role can't do; the server enforces.
 
-## ADR-6 — Offline isolation (`branch-edge/`)
-A browser-only offline store cannot coordinate several tills on one LAN. Each branch therefore runs a small edge
-server instead:
-- **Storage.** SQLite in WAL mode with `synchronous=FULL`, and `BEGIN IMMEDIATE` per sale.
-- **Outbox.** Immutable outbox events, enforced by triggers.
-- **Sync.** Idempotent push with backoff, then pull of a snapshot.
+## ADR-6 — Offline isolation: the branch box (`branch-edge/`)
+A browser-only offline store cannot coordinate several tills on one LAN or survive a cleared browser. Each
+branch therefore runs a **branch box** on its back-office PC, and the checkout computers always use the till
+through it (online or not), so there is one behaviour and no switching:
+- **Same till screen.** The box serves the React build and answers the till's API paths with the same
+  shapes (`webapi.py`, `till.py`); `meta.edge` hides everything but the till.
+- **Storage.** SQLite in WAL mode with `synchronous=FULL`, and `BEGIN IMMEDIATE` per action (serialises 3–5 tills).
+- **Outbox.** Immutable events (`shift_open`, `sale`, `refund`, `shift_close`), enforced by triggers.
+- **Sync.** Live forwarding (each event wakes the loop), heartbeat every 5 s, snapshot refresh every 5 min,
+  idempotent push with backoff (max 60 s).
 
-The central system ingests each event in its own transaction, keyed by UUID (exactly once), through the same POS
-posting path. Cashier grants expire, which bounds how long a revoked account could keep selling offline.
+Head office ingests each event in its own transaction, keyed by UUID (exactly once), **through the same shift,
+POS, approval and refund functions** as online tills; dependencies not yet received answer `retry`. Cashier
+grants expire 24 hours after the last refresh, which bounds how long a revoked account could keep selling.
+Details: `docs/offline-branch-box.md`.
 
 ## ADR-7 — AI is assistive
 Alerts are rule-based (`rules-v1`), computed from read-only, branch-scoped data, with evidence attached.

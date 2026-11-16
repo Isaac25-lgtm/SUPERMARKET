@@ -45,7 +45,9 @@ Legend: ✅ working & covered by automated tests · ☑️ working, verified man
 | Item | Status | Notes |
 |---|---|---|
 | Edge snapshot, time-limited grants, offline sale, durable outbox, exactly-once sync, conflicts | ✅ | simulated WAN outage against the real central API |
-| Edge LAN till page | ⚠️ | minimal: scan/search, cash sale, receipt number; no refunds, overrides or weighing UI beyond a prompt |
+| Branch box till (same React till over the shop LAN) | ✅ | shifts with blind count, scanning and scale labels, weighed items, cash / card / mobile money, in-person manager approval for discounts and refunds, receipts; live forwarding; 24-hour offline limit (`docs/offline-branch-box.md`) |
+| Head-office replay of box shifts, sales, refunds | ✅ | same shift, POS, approval and refund rules; dependency retry; conflicts to manager review; `test_branch_box.py` |
+| Windows package and installers | ⚠️ | `MotionBranchBox.exe` built and passed the outage drill on the dev PC; `install-box.ps1` / `setup-till.ps1` not yet run on a real branch PC |
 | Physical hardware (printers, scanners, drawers, UPS, real multi-site LAN) | ❌ | not tested |
 
 ## Frontend

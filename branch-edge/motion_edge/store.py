@@ -55,6 +55,17 @@ CREATE TRIGGER IF NOT EXISTS outbox_payload_immutable BEFORE UPDATE OF payload, 
 BEGIN SELECT RAISE(ABORT, 'outbox events are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS outbox_no_delete BEFORE DELETE ON outbox
 BEGIN SELECT RAISE(ABORT, 'outbox events cannot be deleted'); END;
+-- Till shifts recorded at the branch box (the open event id is the shift id).
+CREATE TABLE IF NOT EXISTS shifts (
+    id TEXT PRIMARY KEY, register_id INTEGER NOT NULL, cashier TEXT NOT NULL, opened_at TEXT NOT NULL,
+    opening_float TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    closed_at TEXT, counted_cash TEXT, cash_drop TEXT, expected_cash TEXT, variance TEXT, note TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS shifts_one_open_per_cashier ON shifts(cashier) WHERE status='open';
+CREATE UNIQUE INDEX IF NOT EXISTS shifts_one_open_per_register ON shifts(register_id) WHERE status='open';
+-- In-person manager approvals (discount overrides), single use and tied to one basket.
+CREATE TABLE IF NOT EXISTS overrides (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, cashier TEXT NOT NULL, register_id INTEGER NOT NULL,
+    manager TEXT NOT NULL, basket TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL, used_by TEXT);
 """
 
 
@@ -78,6 +89,13 @@ class Store:
                 c.execute("ALTER TABLE outbox ADD COLUMN in_snapshot INTEGER NOT NULL DEFAULT 0")
             if "request_hash" not in columns:
                 c.execute("ALTER TABLE outbox ADD COLUMN request_hash TEXT")
+            if "kind" not in columns:  # sale | refund | shift_open | shift_close
+                c.execute("ALTER TABLE outbox ADD COLUMN kind TEXT NOT NULL DEFAULT 'sale'")
+            c.execute("""CREATE TRIGGER IF NOT EXISTS outbox_kind_immutable BEFORE UPDATE OF kind ON outbox
+                         BEGIN SELECT RAISE(ABORT, 'outbox events are immutable'); END""")
+            session_columns = {row["name"] for row in c.execute("PRAGMA table_info(sessions)")}
+            if "csrf" not in session_columns:  # browser sessions of the till page (cookie + CSRF token)
+                c.execute("ALTER TABLE sessions ADD COLUMN csrf TEXT")
             c.execute("""CREATE TRIGGER IF NOT EXISTS outbox_request_immutable BEFORE UPDATE OF request_hash ON outbox
                          BEGIN SELECT RAISE(ABORT, 'outbox request identity is immutable'); END""")
             c.execute("""CREATE INDEX IF NOT EXISTS outbox_unreflected ON outbox(event_id)

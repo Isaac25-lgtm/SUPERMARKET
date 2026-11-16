@@ -34,7 +34,7 @@ export default function SalesPage() {
           <Table><thead><tr><Th>Receipt</Th><Th>Time</Th><Th>Register</Th><Th>Cashier</Th><Th>Payment</Th><Th align="right">Discount</Th><Th align="right">Total</Th></tr></thead>
             <tbody>{sales.map((s) => (
               <tr key={s.id} className="cursor-pointer hover:bg-surface-2/50" onClick={() => openReceipt(s.id)}>
-                <Td><button className="font-mono text-[12.5px] font-medium hover:text-accent hover:underline">{s.number}</button> {s.kind === 'refund' && <StatusChip status="returned" label="Refund" />}{s.source === 'edge' && <Badge tone="info" className="ml-1">Offline</Badge>}</Td>
+                <Td><button className="font-mono text-[12.5px] font-medium hover:text-accent hover:underline">{s.number}</button> {s.kind === 'refund' && <StatusChip status="returned" label="Refund" />}{s.source === 'edge' && <span title={s.local_created_at ? `Recorded by the branch box at ${dateTime(s.local_created_at)}` : 'Recorded by the branch box'}><Badge tone="info" className="ml-1">Branch box</Badge></span>}</Td>
                 <Td>{dateTime(s.posted_at)}</Td><Td>{s.register_name}</Td><Td>{String(s.cashier_name).replace(/\s*\(TEST.*\)/, '')}</Td>
                 <Td className="text-[12.5px]">{(s.payments as R[]).map((p) => p.method.replace('_', ' ')).join(' + ')}{s.unverified_claims && <Badge tone="warn" className="ml-1">unverified</Badge>}</Td>
                 <Td align="right">{num(s.discount_total) ? money(s.discount_total) : '—'}</Td><Td align="right" className={num(s.total) < 0 ? 'text-bad' : 'font-medium'}>{money(s.total)}</Td>

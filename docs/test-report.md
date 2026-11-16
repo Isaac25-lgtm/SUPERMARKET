@@ -9,7 +9,7 @@ Command:
 ```bash
 MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest -q
 ```
-Latest result (16 Nov 2026, after the second review): **116 passed, 0 failed, 0 skipped** (~145 s, plus ~3 min the first time while the fixture template
+Latest result (16 Nov 2026, with the branch box): **121 passed, 0 failed, 0 skipped** (~145 s, plus ~3 min the first time while the fixture template
 builds).
 
 | File | Scope |
@@ -25,6 +25,7 @@ builds).
 | `test_my_access.py` | My access: each account sees exactly its own roles, branches, permissions (all labelled) and approval authority; Roles & permissions: the all-roles directory matches the enforced matrix, names of role holders only for company-wide admins; sign-in required |
 | `test_barcodes.py` | GS1 check digits, UPC-A/EAN-13 equivalence, multiple barcodes per product, duplicate rejection, audited add/remove, unknown-barcode message |
 | `test_stage2_money.py` | Codex stage 2: idempotent sale/refund/deposit (replay, changed payload, per-cashier scope, two-thread duplicate), half-even weighted lines, partial refunds closing gross and VAT exactly, one open refund per receipt, duplicate lines, cash-only till refunds, original-VAT reversal, close-vs-checkout serialization |
+| `test_branch_box.py` | the branch box's till API over HTTPS with head office unplugged: cookie session + CSRF, shift, weighed sale with in-person discount approval (wrong password refused, approval single use), card + mobile money, refund approved in person (replay-safe, card part refused in cash), blind close; reconnect → head office shift closed with the right expected cash and variance, all 4 transactions on it, refund approval consumed, stock, no duplicates on resend, ledger balanced; managers cannot run a till; 24-hour offline limit; dependency `retry`; a till with an online shift cannot get a box shift |
 | `test_offline.py` | 35 offline sales on 2 tills, restart durability, central price change during outage, exactly-once sync, duplicate resend, stock reconciliation, attribution, edge last-unit race, suspended user losing offline access, outbox immutability, device revocation |
 
 ## Defects found by testing and fixed during development
@@ -44,7 +45,7 @@ Trial balance balanced; 0 unbalanced entries; 0 entries without a branch; branch
 days and FYTD; 0 journal entries from internal transfers; 0 negative stock lines.
 
 ## Browser E2E (Playwright, Chromium, local server on seeded dev DB)
-Command: `cd web && E2E_CREDS=<creds.json> npx playwright test -c e2e/playwright.config.ts`. Result: **19 passed**:
+Command: `cd web && E2E_CREDS=<creds.json> npx playwright test -c e2e/playwright.config.ts`. Result: **19 passed, 1 skipped** (the branch-box drill spec, run separately below):
 - the six role dashboards render live data with no page errors (screenshots taken at desktop size, plus mobile
   for the Head Manager and Branch Manager);
 - every navigation route renders for the Head Manager;
@@ -88,6 +89,20 @@ Every step ran in the real browser against the deployed TEST site, as the demo a
 8. CSV exports on the Finance, Shifts and Stock pages used GET links, which the new POST-only endpoints rejected (found in code review).
 
 Each fix is deployed and was re-verified live.
+
+## Branch box outage drill (16 Nov 2026)
+`python branch-edge/tools/outage_drill.py --creds <creds.json> [--box-exe <MotionBranchBox.exe>]` registers a box at
+the local head office, runs it as its own HTTPS program behind a switchable relay, and runs
+`web/e2e/branch-box.spec.ts` as cashier `cash.cen2` on CEN-T2: sell online → cut the line → weighed item with a
+manager-approved discount, another sale, a refund approved by `bm.joseph` → reconnect → everything uploads
+(0 pending, 0 rejected) → blind close → head office shows the sale (source `edge`) on the box's shift.
+**Passed** with `python -m motion_edge` and with the packaged `MotionBranchBox.exe`.
+
+The first drill runs found two real issues, both fixed: a cashier could open a box shift on a till that still had
+another cashier's online shift (head office then refused the shift and flagged the dependent refund); the box now
+refuses with a plain message, and each checkout PC remembers its own till. The finance test
+`test_bank_deposit_moves_cash_from_safe_to_bank` had a latent bug (fixed deposit date before the cash existed; its
+main branch was being skipped because the STH safe was empty); it now deposits with today's date.
 
 ## Not yet executed
 - Load test for 10 users / 4 cashiers on Render. Locally, a concurrent two-cashier race is tested. Throughput on

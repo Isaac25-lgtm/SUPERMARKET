@@ -71,8 +71,9 @@ function Guard({ perm, children }: { perm: string | string[]; children: ReactNod
 }
 
 function Home() {
-  const { me } = useAuth()
+  const { me, meta } = useAuth()
   if (!me) return null
+  if (meta?.edge) return <Navigate to="/pos" replace />
   const role = primaryRole(me.roles)
   if (role === 'cashier') return <Navigate to="/pos" replace />
   if (role === 'sysadmin') return <Navigate to="/system" replace />

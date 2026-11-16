@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import os
 import secrets
 import threading
 import uuid
@@ -20,6 +21,9 @@ from .store import Store
 logger = logging.getLogger("motion.edge")
 _hasher = PasswordHasher()
 SESSION_HOURS = 10
+# A branch may sell offline for at most this long after its last successful refresh from head office.
+MAX_OFFLINE_HOURS = float(os.environ.get("MOTION_EDGE_MAX_OFFLINE_HOURS", "24"))
+SELLING_ROLES = {"cashier", "branch_manager"}
 
 
 class EdgeError(Exception):
@@ -72,7 +76,8 @@ def apply_snapshot(store: Store, snap: dict, acknowledged: tuple[str, ...] = ())
                       (username, g["full_name"], json.dumps(g["roles"]), g["verifier"], str(g["offline_until"])))
         # Sessions of users who no longer have a grant end immediately.
         c.execute("DELETE FROM sessions WHERE username NOT IN (SELECT username FROM grants)")
-        for key in ("branch", "registers", "policy", "methods", "price_version", "server_time", "brand", "test_data"):
+        for key in ("branch", "registers", "policy", "methods", "price_version", "server_time", "brand", "test_data",
+                    "open_shifts"):
             store.set_meta(c, key, snap.get(key))
         store.set_meta(c, "snapshot_at", now().isoformat())
         c.executemany("UPDATE outbox SET in_snapshot=1 WHERE event_id=? AND status='acked'",
@@ -80,12 +85,25 @@ def apply_snapshot(store: Store, snap: dict, acknowledged: tuple[str, ...] = ())
 
 
 def reservations(conn) -> dict[int, Decimal]:
+    """Stock moved by events the head-office snapshot does not include yet (sales out, refunds back in)."""
     reserved = {}
-    for row in conn.execute("SELECT payload FROM outbox WHERE in_snapshot=0"):
-        for line in json.loads(row["payload"])["lines"]:
+    for row in conn.execute("SELECT kind, payload FROM outbox WHERE in_snapshot=0 AND kind IN ('sale','refund')"):
+        sign = Decimal(-1) if row["kind"] == "refund" else Decimal(1)
+        for line in json.loads(row["payload"]).get("lines") or []:
             product_id = int(line["product_id"])
-            reserved[product_id] = reserved.get(product_id, Decimal(0)) + Decimal(line["quantity"])
+            reserved[product_id] = reserved.get(product_id, Decimal(0)) + sign * Decimal(line["quantity"])
     return reserved
+
+
+def check_fresh(store: Store) -> None:
+    """Refuse to trade on prices and access older than the offline limit."""
+    at = store.get_meta("snapshot_at")
+    if not at:
+        raise EdgeError("This branch box has not received its first update from head office yet. "
+                        "Connect it to the internet.", 503)
+    if (now() - dt.datetime.fromisoformat(at)).total_seconds() > MAX_OFFLINE_HOURS * 3600:
+        raise EdgeError(f"This branch box has been offline for more than {MAX_OFFLINE_HOURS:g} hours. "
+                        "Reconnect the internet so prices and staff access can refresh, then continue.", 503)
 
 
 def available(store: Store, conn, product_id: int, reserved: dict[int, Decimal] | None = None) -> Decimal:
@@ -98,7 +116,7 @@ def available(store: Store, conn, product_id: int, reserved: dict[int, Decimal] 
 
 # ---------------------------------------------------------------- auth
 
-def login(store: Store, username: str, password: str, register_id: int, *, client_ip: str = "local") -> dict:
+def login(store: Store, username: str, password: str, register_id: int | None, *, client_ip: str = "local") -> dict:
     uname = (username or "").strip().lower()
     cutoff = (now() - dt.timedelta(minutes=15)).isoformat()
     with store.write() as c:
@@ -121,23 +139,24 @@ def login(store: Store, username: str, password: str, register_id: int, *, clien
     if until <= now():
         raise EdgeError("Offline sign-in has expired for this account; reconnect to the internet to refresh access.", 401)
     regs = {r["id"] for r in (store.get_meta("registers") or [])}
-    if register_id not in regs:
+    if register_id is not None and register_id not in regs:
         raise EdgeError("Unknown register for this branch.", 400)
-    token = secrets.token_urlsafe(24)
+    token, csrf = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
     expires = min(until, now() + dt.timedelta(hours=SESSION_HOURS))
     with store.write() as c:
         current = c.execute("SELECT verifier, offline_until FROM grants WHERE username=?", (uname,)).fetchone()
         if not current or current["verifier"] != g["verifier"] or current["offline_until"] != g["offline_until"]:
             raise EdgeError("Access changed during sign-in. Try again.", 401)
         c.execute("DELETE FROM login_failure WHERE username=?", (uname,))
-        c.execute("INSERT INTO sessions (token_hash, username, register_id, created_at, expires_at) VALUES (?,?,?,?,?)",
-                  (sha(token), uname, register_id, now().isoformat(), expires.isoformat()))
-    return {"token": token, "username": uname, "full_name": g["full_name"], "roles": json.loads(g["roles"]),
+        c.execute("""INSERT INTO sessions (token_hash, username, register_id, created_at, expires_at, csrf)
+                     VALUES (?,?,?,?,?,?)""",
+                  (sha(token), uname, register_id or 0, now().isoformat(), expires.isoformat(), csrf))
+    return {"token": token, "csrf": csrf, "username": uname, "full_name": g["full_name"], "roles": json.loads(g["roles"]),
             "register_id": register_id, "expires_at": expires.isoformat()}
 
 
 def _active_session(conn, token_hash: str) -> dict:
-    s = conn.execute("""SELECT s.*, g.roles, g.offline_until FROM sessions s
+    s = conn.execute("""SELECT s.*, g.roles, g.offline_until, g.full_name FROM sessions s
                         JOIN grants g ON g.username=s.username WHERE token_hash=?""", (token_hash,)).fetchone()
     if not s or min(dt.datetime.fromisoformat(s["expires_at"]), dt.datetime.fromisoformat(s["offline_until"])) <= now():
         raise EdgeError("Session ended. Sign in again.", 401)
@@ -153,7 +172,8 @@ def session(store: Store, token: str | None) -> dict:
 
 # ---------------------------------------------------------------- selling
 
-def sell(store: Store, sess: dict, *, client_key: str, lines: list[dict], payments: list[dict]) -> dict:
+def sell(store: Store, sess: dict, *, client_key: str, lines: list[dict], payments: list[dict],
+         shift_id: str | None = None, override_id: int | None = None) -> dict:
     try:
         event_id = str(uuid.UUID(client_key))
     except (ValueError, TypeError) as exc:
@@ -176,10 +196,11 @@ def sell(store: Store, sess: dict, *, client_key: str, lines: list[dict], paymen
         "payments": [(payment["method"], str(a), payment.get("reference"))
                      for payment, a in zip(payments, amounts, strict=True)],
     }, separators=(",", ":")))
+    check_fresh(store)
     with store.write() as c:
         # Recheck after acquiring the same write lock used when applying grants.
         sess = _active_session(c, sess["token_hash"])
-        if not set(json.loads(sess["roles"])) & {"cashier", "branch_manager"}:
+        if not set(json.loads(sess["roles"])) & SELLING_ROLES:
             raise EdgeError("This account cannot sell.", 403)
         prev = c.execute("SELECT * FROM outbox WHERE event_id=?", (event_id,)).fetchone()
         if prev:
@@ -187,8 +208,20 @@ def sell(store: Store, sess: dict, *, client_key: str, lines: list[dict], paymen
                     or (prev["request_hash"] is not None and prev["request_hash"] != request_hash)):
                 raise EdgeError("This receipt key belongs to another checkout.", 409)
             return _receipt(prev)
+        if shift_id is not None:
+            shift = c.execute("SELECT * FROM shifts WHERE id=? AND status='open'", (shift_id,)).fetchone()
+            if not shift or shift["cashier"] != sess["username"] or shift["register_id"] != sess["register_id"]:
+                raise EdgeError("Open your shift on this till before selling.", 409)
         policy = store.get_meta("policy") or {}
         max_disc = Decimal(str(policy.get("cashier_max_discount_pct", 0)))
+        override = None
+        if override_id is not None:
+            override = c.execute("SELECT * FROM overrides WHERE id=?", (override_id,)).fetchone()
+            if (not override or override["used_by"] or override["cashier"] != sess["username"]
+                    or override["register_id"] != sess["register_id"]):
+                raise EdgeError("The manager approval is missing or was already used. Ask the manager again.", 409)
+            if json.loads(override["basket"]) != basket_signature(lines):
+                raise EdgeError("The basket changed after the manager approved it. Ask the manager again.", 409)
         allow_negative = bool(policy.get("allow_negative_stock", False))
         priced, total = [], Decimal(0)
         need: dict[int, Decimal] = {}
@@ -199,14 +232,15 @@ def sell(store: Store, sess: dict, *, client_key: str, lines: list[dict], paymen
             item = json.loads(row["data"])
             if q <= 0 or (not item["sold_by_weight"] and q != q.to_integral_value()):
                 raise EdgeError(f"Invalid quantity for {item['name']}.")
-            if pct > max_disc:
-                raise EdgeError(f"Discounts above {max_disc}% need the central system (manager override is online only).", 403)
+            if pct > max_disc and override is None:
+                raise EdgeError(f"Discounts above {max_disc}% need a manager approval at the till.", 403)
             gross = money(item["price"])
             unit = money(gross * (100 - pct) / 100) if pct else gross
             total += line_amount(q, unit)
             need[item["id"]] = need.get(item["id"], Decimal(0)) + q
             priced.append({"product_id": item["id"], "name": item["name"], "uom": item["uom"], "quantity": str(q),
-                           "unit_price": str(unit), "list_price": str(gross), "discount_pct": str(pct)})
+                           "unit_price": str(unit), "list_price": str(gross), "discount_pct": str(pct),
+                           "vat": bool(item.get("vat"))})
         reserved = reservations(c)
         for pid, q in need.items():
             have = available(store, c, pid, reserved)
@@ -231,21 +265,36 @@ def sell(store: Store, sess: dict, *, client_key: str, lines: list[dict], paymen
             pays.append({"method": "cash", "amount": str(cash_due), "tendered": str(cash_tendered),
                          "change": str(cash_tendered - cash_due)})
         reg = int(sess["register_id"])
-        seq = c.execute("SELECT next FROM receipt_seq WHERE register_id=?", (reg,)).fetchone()
-        n = seq["next"] if seq else 1
-        c.execute("INSERT INTO receipt_seq (register_id, next) VALUES (?, ?) ON CONFLICT(register_id) DO UPDATE SET next=excluded.next",
-                  (reg, n + 1))
-        reg_name = next((r["name"] for r in store.get_meta("registers") or [] if r["id"] == reg), str(reg))
-        local_no = f"{reg_name}-OFF-{n:05d}"
+        local_no = next_receipt_no(store, c, reg)
         created = now().isoformat()
         payload = {"register_id": reg, "cashier_username": sess["username"], "local_created_at": created,
                    "local_receipt_no": local_no, "lines": priced, "payments": pays,
                    "price_version": store.get_meta("price_version"), "total": str(total)}
-        c.execute("""INSERT INTO outbox (event_id, created_at, register_id, cashier, local_receipt_no, payload, request_hash)
-                     VALUES (?,?,?,?,?,?,?)""",
+        if shift_id is not None:
+            payload["shift_event_id"] = shift_id
+        if override is not None:
+            payload["override"] = {"manager_username": override["manager"], "reason": override["reason"]}
+            c.execute("UPDATE overrides SET used_by=? WHERE id=?", (event_id, override["id"]))
+        c.execute("""INSERT INTO outbox (event_id, created_at, register_id, cashier, local_receipt_no, payload,
+                     request_hash, kind) VALUES (?,?,?,?,?,?,?,'sale')""",
                   (event_id, created, reg, sess["username"], local_no, json.dumps(payload), request_hash))
         row = c.execute("SELECT * FROM outbox WHERE event_id=?", (event_id,)).fetchone()
     return _receipt(row)
+
+
+def basket_signature(lines: list[dict]) -> list:
+    """What a manager approved: the products and their discounts (quantities may still change)."""
+    return sorted([int(ln["product_id"]), str(Decimal(str(ln.get("discount_pct") or 0)).normalize())] for ln in lines)
+
+
+def next_receipt_no(store: Store, c, register_id: int) -> str:
+    """Branch-box receipt numbers, one sequence per till: NTH-T1-B000012 (B = recorded by the branch box)."""
+    seq = c.execute("SELECT next FROM receipt_seq WHERE register_id=?", (register_id,)).fetchone()
+    n = seq["next"] if seq else 1
+    c.execute("""INSERT INTO receipt_seq (register_id, next) VALUES (?, ?)
+                 ON CONFLICT(register_id) DO UPDATE SET next=excluded.next""", (register_id, n + 1))
+    reg_name = next((r["name"] for r in store.get_meta("registers") or [] if r["id"] == register_id), str(register_id))
+    return f"{reg_name}-B{n:06d}"
 
 
 def _receipt(row) -> dict:
@@ -259,17 +308,21 @@ def _receipt(row) -> dict:
 class Syncer:
     """Push pending events then pull a fresh snapshot.  Safe to call repeatedly."""
 
-    def __init__(self, store: Store, client: httpx.Client):
+    def __init__(self, store: Store, client: httpx.Client, pull_seconds: float | None = None):
         self.store = store
         self.client = client
         self._lock = threading.Lock()
+        # Prices, products and staff access refresh every few minutes; sales are forwarded at once.
+        self.pull_seconds = (float(os.environ.get("MOTION_EDGE_PULL_SECONDS", "300"))
+                             if pull_seconds is None else pull_seconds)
+        self.wake = threading.Event()  # set by the till after each recorded event
 
     def push(self, batch: int = 50) -> dict:
         with self.store.connect() as c:
             rows = c.execute("SELECT * FROM outbox WHERE status='pending' ORDER BY created_at LIMIT ?", (batch,)).fetchall()
         if not rows:
             return {"sent": 0}
-        events = [{"event_id": r["event_id"], "kind": "sale", "payload": json.loads(r["payload"])} for r in rows]
+        events = [{"event_id": r["event_id"], "kind": r["kind"], "payload": json.loads(r["payload"])} for r in rows]
         try:
             resp = self.client.post("/api/edge/events", json={"events": events}, timeout=30)
             resp.raise_for_status()
@@ -299,6 +352,7 @@ class Syncer:
                     c.execute("UPDATE outbox SET status='rejected', ack=?, last_error=?, attempts=attempts+1 WHERE event_id=?",
                               (json.dumps(a, default=str), a.get("error"), r["event_id"]))
             self.store.set_meta(c, "last_push_ok", now().isoformat())
+            self.store.set_meta(c, "last_contact", now().isoformat())
         if any(r["event_id"] not in acks or acks[r["event_id"]]["status"] == "retry" for r in rows):
             raise SyncProtocolError("Some offline sales are awaiting confirmation.")
         return {"sent": len(rows), "acks": list(acks.values())}
@@ -312,16 +366,28 @@ class Syncer:
         resp = self.client.get("/api/edge/snapshot", timeout=30)
         resp.raise_for_status()
         apply_snapshot(self.store, resp.json(), acknowledged)
+        with self.store.write() as c:
+            self.store.set_meta(c, "last_contact", now().isoformat())
 
-    def sync_once(self) -> dict:
+    def heartbeat(self) -> None:
+        resp = self.client.get("/api/edge/heartbeat", timeout=10)
+        resp.raise_for_status()
+        with self.store.write() as c:
+            self.store.set_meta(c, "last_contact", now().isoformat())
+
+    def sync_once(self, force_pull: bool = True) -> dict:
         if not self._lock.acquire(blocking=False):
             return {"ok": False, "error": "Sync is already in progress."}
         try:
-            return self._sync_once()
+            return self._sync_once(force_pull)
         finally:
             self._lock.release()
 
-    def _sync_once(self) -> dict:
+    def _pull_due(self) -> bool:
+        at = self.store.get_meta("snapshot_at")
+        return not at or (now() - dt.datetime.fromisoformat(at)).total_seconds() >= self.pull_seconds
+
+    def _sync_once(self, force_pull: bool = True) -> dict:
         result: dict[str, Any] = {"ok": False}
         try:
             total = 0
@@ -332,8 +398,10 @@ class Syncer:
                     break
             with self.store.connect() as c:
                 pending = c.execute("SELECT 1 FROM outbox WHERE status='pending' LIMIT 1").fetchone()
-            if not pending:
+            if not pending and (force_pull or self._pull_due()):
                 self.pull()
+            elif not pending and not total:
+                self.heartbeat()
             with self.store.write() as c:
                 self.store.set_meta(c, "last_sync_ok", now().isoformat())
             result.update(ok=True, pushed=total)
@@ -350,7 +418,9 @@ def status(store: Store) -> dict:
         oldest = c.execute("SELECT min(created_at) m FROM outbox WHERE status='pending'").fetchone()["m"]
     last_ok = store.get_meta("last_sync_ok")
     last_err = (store.get_meta("last_sync_error") or {}).get("at")
-    online = bool(last_ok) and (now() - dt.datetime.fromisoformat(last_ok)).total_seconds() < 90         and not (last_err and last_err > last_ok)
+    contact = store.get_meta("last_contact") or last_ok
+    online = bool(contact) and (now() - dt.datetime.fromisoformat(contact)).total_seconds() < 90 \
+        and not (last_err and last_err > contact)
     return {"online": online, "last_sync_ok": last_ok, "last_error": store.get_meta("last_sync_error"),
             "pending": counts.get("pending", 0), "acked": counts.get("acked", 0), "rejected": counts.get("rejected", 0),
             "oldest_pending": oldest, "snapshot_at": store.get_meta("snapshot_at"),

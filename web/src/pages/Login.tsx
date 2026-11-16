@@ -68,7 +68,9 @@ export function LoginPage() {
             <h1 className="text-[22px] font-semibold tracking-tight">Sign in</h1>
             {meta?.test_data && <TestDataBadge />}
           </div>
-          <p className="mt-1 text-sm text-muted">Use the account your manager created for you.</p>
+          <p className="mt-1 text-sm text-muted">{meta?.edge
+            ? <>Branch till{meta.branch ? ` · ${meta.branch.name}` : ''}. Works with or without internet.</>
+            : 'Use the account your manager created for you.'}</p>
           <SignedOutNotice />
           <form onSubmit={onSubmit} className="mt-7 space-y-4" noValidate>
             <Field label="Username" htmlFor="username" error={formState.errors.username?.message}>

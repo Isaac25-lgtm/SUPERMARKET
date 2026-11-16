@@ -18,7 +18,7 @@ import { barcodeCandidates, beep, listenForScanner } from '../lib/scanner'
 interface Item { id: number; name: string; sku: string | null; barcode: string | null; barcodes?: string[]; plu: string | null; category: string | null
   uom: string; sold_by_weight: boolean; price: string; vat: boolean; on_hand: string }
 interface Catalog { register: { id: number; name: string; branch_id: number }; items: Item[]; policy: { cashier_max_discount_pct: number; receipt_footer?: string } }
-interface Shift { id: number; register_id: number; register_name: string; branch_name: string; opened_at: string; opening_float: string
+interface Shift { id: number | string; register_id: number; register_name: string; branch_name: string; opened_at: string; opening_float: string
   expected_cash_now?: string; sales: number; refunds: number; net_total?: string; interrupted: boolean }
 interface Line { product: Item; quantity: number; discount_pct: number; discount_text?: string }
 interface Payment { method: 'cash' | 'mobile_money' | 'card'; amount: string; reference?: string }
@@ -46,6 +46,7 @@ function clearBasketKey(registerId: number) {
 const lineTotal = (l: Line) => lineAmount(l.quantity, unitAfterDiscount(num(l.product.price), l.discount_pct))
 
 export default function PosPage() {
+  const edge = !!useAuth().meta?.edge
   const shiftQ = useQuery({ queryKey: ['pos-shift'], queryFn: () => api.get<{ shift: Shift | null }>('/api/pos/shift') })
   const [tab, setTab] = useState<'sell' | 'refund' | 'shift'>('sell')
   if (shiftQ.isLoading) return <div className="p-6 text-muted">Loading till…</div>
@@ -66,13 +67,37 @@ export default function PosPage() {
         </div>
       </div>
       {tab === 'sell' && <Till shift={shift} />}
-      {tab === 'refund' && <Refunds shift={shift} />}
+      {tab === 'refund' && (edge ? <TillRefunds /> : <Refunds shift={shift} />)}
       {tab === 'shift' && <CloseShift shift={shift} onDone={() => setTab('sell')} />}
     </div>
   )
 }
 
+interface BoxStatus { online: boolean; pending: number; rejected: number; last_sync_ok: string | null; snapshot_at: string | null }
+
+/** Branch till: the box on the shop network records every sale; this shows whether head office is reachable. */
+function BranchBoxPill() {
+  const s = useQuery({ queryKey: ['box-status'], queryFn: () => api.get<BoxStatus>('/api/edge/status'), refetchInterval: 5000 })
+  if (!s.data) return null
+  const { online, pending, rejected } = s.data
+  const waiting = pending > 0 ? ` · ${pending} waiting` : ''
+  return (
+    <span className="flex items-center gap-1.5" data-testid="box-status">
+      {online
+        ? <span title="Sales go to head office within seconds." className="inline-flex items-center gap-1.5 rounded-full bg-good-soft px-2.5 py-1 text-[12px] font-medium text-good"><Wifi className="size-3.5" />Online{waiting}</span>
+        : <span title="Keep selling. Sales are saved on the branch box and upload automatically when the internet is back." className="inline-flex items-center gap-1.5 rounded-full bg-warn-soft px-2.5 py-1 text-[12px] font-medium text-warn"><WifiOff className="size-3.5" />Offline · {pending} saved on branch box</span>}
+      {rejected > 0 && <span title="Head office could not accept these; the branch manager reviews them." className="rounded-full bg-bad-soft px-2.5 py-1 text-[12px] font-medium text-bad">{rejected} need review</span>}
+    </span>
+  )
+}
+
 function ConnectionPill() {
+  const { meta } = useAuth()
+  if (meta?.edge) return <BranchBoxPill />
+  return <BrowserConnectionPill />
+}
+
+function BrowserConnectionPill() {
   const [online, setOnline] = useState(navigator.onLine)
   useEffect(() => {
     const up = () => setOnline(true); const down = () => setOnline(false)
@@ -84,14 +109,27 @@ function ConnectionPill() {
     : <span title="Use the branch edge till for offline selling" className="inline-flex items-center gap-1.5 rounded-full bg-bad-soft px-2.5 py-1 text-[12px] font-medium text-bad"><WifiOff className="size-3.5" />Offline — switch to branch till</span>
 }
 
+// Each checkout computer remembers its own till, so cashiers do not open a shift on someone else's.
+const TILL_KEY = 'motion.till.register'
+function rememberedTill(ids: number[]): number | '' {
+  try {
+    const saved = Number(localStorage.getItem(TILL_KEY))
+    if (ids.includes(saved)) return saved
+  } catch { /* storage unavailable */ }
+  return ids[0] ?? ''
+}
+
 function OpenShift() {
   const { me } = useAuth()
   const qc = useQueryClient()
-  const [register, setRegister] = useState<number | ''>(me?.registers[0]?.id ?? '')
+  const [register, setRegister] = useState<number | ''>(() => rememberedTill(me?.registers.map((r) => r.id) ?? []))
   const [float, setFloat] = useState('200000')
   const m = useMutation({
     mutationFn: () => api.post('/api/pos/shifts', { register_id: register, opening_float: float || '0' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['pos-shift'] }),
+    onSuccess: () => {
+      try { localStorage.setItem(TILL_KEY, String(register)) } catch { /* storage unavailable */ }
+      qc.invalidateQueries({ queryKey: ['pos-shift'] })
+    },
   })
   return (
     <div className="mx-auto mt-6 max-w-md">
@@ -478,6 +516,92 @@ function Refunds({ shift }: { shift: Shift }) {
             ))}
           </ul>
         ) : <Empty title="No refund requests yet" />}
+      </Card>
+      {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} />}
+    </div>
+  )
+}
+
+/** Branch till refund: the branch manager approves in person on this screen; the cash is paid out at once. */
+function TillRefunds() {
+  const qc = useQueryClient()
+  const [number, setNumber] = useState('')
+  const [sale, setSale] = useState<Record<string, any> | null>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
+  const [pick, setPick] = useState<Record<number, string>>({})
+  const [reason, setReason] = useState('')
+  const [manager, setManager] = useState('')
+  const [password, setPassword] = useState('')
+  const [findErr, setFindErr] = useState<unknown>(null)
+  const [receipt, setReceipt] = useState<Record<string, unknown> | null>(null)
+  const [key, setKey] = useState(() => uuid())
+  const recent = useQuery({ queryKey: ['my-refunds'], queryFn: () => api.get<{ requests: Record<string, any>[] }>('/api/approvals/mine') }) // eslint-disable-line @typescript-eslint/no-explicit-any
+  const find = async (e: React.FormEvent) => {
+    e.preventDefault(); setFindErr(null); setSale(null); setPick({})
+    try { setSale(await api.get(`/api/pos/receipts/${encodeURIComponent(number.trim())}`)) } catch (err) { setFindErr(err) }
+  }
+  const refund = useMutation({
+    mutationFn: () => api.post<Record<string, unknown>>('/api/pos/refunds/at-till', {
+      sale_id: sale!.id, reason, manager_username: manager, manager_password: password, idempotency_key: key,
+      lines: Object.entries(pick).filter(([, q]) => milli(q) > 0).map(([line_id, q]) => ({ line_id: Number(line_id), quantity: (milli(q) / 1000).toFixed(3) })),
+    }),
+    onSuccess: (r) => {
+      setReceipt(r); setSale(null); setReason(''); setNumber(''); setPassword(''); setManager(''); setKey(uuid())
+      qc.invalidateQueries({ queryKey: ['my-refunds'] }); qc.invalidateQueries({ queryKey: ['pos-shift'] }); qc.invalidateQueries({ queryKey: ['till-catalog'] })
+    },
+  })
+  const ready = reason.trim().length >= 5 && manager && password && Object.values(pick).some((q) => milli(q) > 0)
+  return (
+    <div className="grid gap-5 lg:grid-cols-2">
+      <Card>
+        <CardHeader title="Refund at the till" subtitle="Find the receipt, choose what comes back, and the branch manager approves here." icon={<RotateCcw className="size-4" />} />
+        <div className="space-y-4 p-5">
+          <form onSubmit={find} className="flex gap-2">
+            <Input aria-label="Receipt number" placeholder="Receipt number, e.g. NTH-T1-B000123" value={number} onChange={(e) => setNumber(e.target.value)} />
+            <Button type="submit">Find</Button>
+          </form>
+          <ErrorBox error={findErr} />
+          {sale && (
+            <>
+              <div className="text-[13px] text-muted">{sale.number} · {dateTime(sale.posted_at)} · {money(sale.total)}</div>
+              <ul className="divide-y divide-line rounded-lg border border-line">
+                {(sale.lines as Record<string, string>[]).map((l) => {
+                  const leftM = milli(l.quantity) - milli(l.refunded_qty)
+                  return (
+                    <li key={l.id} className="flex items-center justify-between gap-3 px-3 py-2 text-[13px]">
+                      <div><div className="font-medium">{l.name}</div><div className="text-muted">{qty(l.quantity, l.uom)} sold · {qty(leftM / 1000, l.uom)} refundable · {money(l.unit_price)}</div></div>
+                      <input aria-label={`Refund quantity for ${l.name}`} inputMode="decimal" disabled={leftM <= 0} value={pick[Number(l.id)] ?? ''} placeholder="0"
+                        onChange={(e) => { const v = e.target.value.trim(); if (/^\d*\.?\d{0,3}$/.test(v) && (v === '' || milli(v) <= leftM)) setPick((p) => ({ ...p, [Number(l.id)]: v })) }} className="h-9 w-20 rounded-lg border border-line px-2 text-right" />
+                    </li>
+                  )
+                })}
+              </ul>
+              <Field label="Reason" htmlFor="trr"><Textarea id="trr" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="What is wrong with the goods?" /></Field>
+              <div className="rounded-xl border border-line-strong bg-surface-2 p-3.5">
+                <div className="mb-2 flex items-center gap-2 text-[13px] font-semibold"><ShieldCheck className="size-4 text-accent" />Branch manager approval</div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Field label="Manager username" htmlFor="tmu"><Input id="tmu" autoComplete="off" value={manager} onChange={(e) => setManager(e.target.value)} /></Field>
+                  <Field label="Manager password" htmlFor="tmp"><Input id="tmp" type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
+                </div>
+                <p className="mt-2 text-[12px] text-muted">The manager types their own password. The refund is paid in cash now and sent to head office automatically.</p>
+              </div>
+              <ErrorBox error={refund.error} />
+              <Button variant="primary" loading={refund.isPending} disabled={!ready} onClick={() => refund.mutate()}>Approve and pay out</Button>
+            </>
+          )}
+        </div>
+      </Card>
+      <Card>
+        <CardHeader title="My refunds today" subtitle="Paid out at this branch till." />
+        {recent.data?.requests.length ? (
+          <ul className="divide-y divide-line">
+            {recent.data.requests.map((r) => (
+              <li key={r.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                <div><div className="text-[13.5px] font-medium">{r.title}</div><div className="text-[12px] text-muted">{r.ref} · {money(r.amount)} · approved by {r.manager} · {dateTime(r.created_at)}</div></div>
+                <StatusChip status={r.status} label={r.status_label} />
+              </li>
+            ))}
+          </ul>
+        ) : <Empty title="No refunds yet" />}
       </Card>
       {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} />}
     </div>

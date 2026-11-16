@@ -83,6 +83,15 @@ cards, tables, inputs and panels have a visible edge on bright screens.
 | **Medium.** A page file that stays unavailable after the automatic reload left a blank screen. | Each page renders inside an error boundary (reset on navigation) with **Try again** (reload) and **Go to start**; the sidebar stays usable. E2E: "a page that cannot load shows a retry". |
 | **Performance note.** Payables summary moved aggregation of every open bill into Python. | Cached totals are summed in SQL again (grouped by state); only bills without a cached total (drafts and validated bills, normally a short queue) are computed live. Test: `test_payables_summary_counts_cached_and_live_totals`. Still to do: measure the accountant dashboard on staging with realistic invoice volume. |
 
+## Offline selling: the branch box (16 Nov 2026)
+Decided with the client's representative: the back-office PC runs the branch box; 24-hour offline limit; refunds
+and discounts above the cashier limit approved in person by the branch manager on the till; standalone card
+machines; EFRIS unknown (can be added later). Built: the same React till served by the box over the shop LAN
+(HTTPS, own certificate), local shifts / sales / refunds as immutable events, live forwarding, head-office replay
+through the same shift, POS, approval and refund rules, Windows exe + install scripts. Details and tests:
+`docs/offline-branch-box.md`. Not yet done: a first install on a real branch PC (admin steps), a one-click
+Setup.exe, EFRIS, cash-drawer kick.
+
 ## Still open (decisions and operations, not code)
 - **Finance:**
   - refund-to-tender policy;
@@ -97,6 +106,7 @@ cards, tables, inputs and panels have a visible edge on bright screens.
   - rotate the Neon, Render and DeepSeek keys;
   - run a staging restore with migration 0007;
   - time the accountant dashboard (payables summary) on staging with realistic bill volume;
+  - pilot the branch box at one branch (install, outage drill with 2 tills, power-cut test with the UPS);
   - load test with 10 users;
   - verify TLS and ACLs on real branch hardware.
 - **Cleanup (L1/L2):**

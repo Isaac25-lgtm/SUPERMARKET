@@ -15,7 +15,7 @@ offline-capable branch tills, and evidence-linked business insights.
 | **Core engine** | [Tryton](https://www.tryton.org/) **8.0 LTS** (8.0.14), in-process |
 | **API** | Python 3.12 · FastAPI · Pydantic |
 | **Web** | React 19 · TypeScript (strict) · Vite · Tailwind CSS 4 · TanStack Query · Recharts |
-| **Offline** | Branch-edge service (FastAPI + SQLite/WAL) with an immutable outbox |
+| **Offline** | Branch box on the back-office PC (FastAPI + SQLite/WAL, immutable outbox) serving the same till screen over the shop LAN |
 | **Tests** | 106 backend integration tests on real PostgreSQL + Tryton (`pytest`) · 11 browser E2E (Playwright) |
 
 ---
@@ -184,7 +184,8 @@ api/motion_api/            FastAPI app (policy layer) + in-process Tryton gatewa
   seed*.py, creds.py       TEST DATA generator (through the real services) + derived UAT passwords
 api/tests/                 integration tests (real PostgreSQL + Tryton + HTTP)
 tryton-modules/motion_branch/   custom Tryton 8.0 module (GPL-3.0-or-later)
-branch-edge/motion_edge/   offline branch server + minimal LAN till page
+branch-edge/motion_edge/   branch box: till API + till screen for the shop LAN, outbox sync
+branch-edge/windows/       Windows build and install scripts (exe, install-box, setup-till)
 web/                       React + TypeScript UI
 docs/                      architecture, permissions matrix, policies, status, licences
 infra/scripts/             disposable local PostgreSQL for dev/tests, reset script
@@ -347,34 +348,18 @@ Detailed results are in [docs/test-report.md](docs/test-report.md).
 
 ## Offline branch tills
 
-Each supermarket runs `branch-edge` on a small PC on its LAN. Tills keep selling during internet outages, and
-everything syncs when the connection returns.
+Each branch runs the **branch box** on its back-office PC (Windows). The checkout computers open the same till
+screen from it over the shop network, so the tills keep selling when the internet is off: sales, refunds and
+shifts are saved on the box and upload to head office automatically (within seconds when online). Cashiers
+see an Online / Offline pill with the number of sales waiting. Discounts above the cashier limit and refunds
+are approved in person by the branch manager on the till. The box sells for up to 24 hours without a refresh.
 
-```bash
-pip install ./branch-edge
-MOTION_EDGE_CENTRAL_URL=https://motion-supermarket.onrender.com \
-MOTION_EDGE_TOKEN=edge_... \
-MOTION_EDGE_DB=./data/edge.sqlite3 \
-uvicorn motion_edge.app:app --host 127.0.0.1 --port 8080
-```
-
-Use the one-time token from System & devices. Put a TLS reverse proxy in front of the edge service for
-branch tills and keep the port off the public internet. Configure the proxy address Uvicorn trusts.
-Restrict the service account, SQLite database, backups, and WAL files with the host's access controls.
-
-- **Snapshot.** When online, the edge pulls a snapshot: catalog, prices, stock, registers, policy and
-  **time-limited** cashier sign-in grants (default 12 h).
-- **Offline sales.** Each sale gets an immutable UUID and a local receipt number (`NTH-T1-OFF-00012`). Multiple
-  tills are serialised by SQLite's write lock, so the last unit can't be sold twice locally.
-- **Exactly-once sync.** Events are posted centrally through the same Tryton POS workflow as online sales, with
-  the original cashier and local timestamp preserved.
-- **Conflicts and permanent rejects are retained.** A missing acknowledgement or temporary central error leaves
-  the receipt pending. A posted receipt stays reserved locally until a fresh central snapshot reflects it.
-  Rejected receipts need finance review and continue to reserve the goods recorded as sold.
-- **Not yet tested on hardware**: thermal printers, cash drawers, UPS/power loss, real multi-site LANs. The edge
-  till page is deliberately minimal (see [Status](#status)).
-
----
+* Build the package: `powershell -ExecutionPolicy Bypass -File branch-edge\windows\build.ps1`
+  (→ `branch-edge\windows\dist\MotionBranchBox-<version>.zip`).
+* Install: register a branch box in **System** (one-time token), run `install-box.ps1` on the back-office PC
+  and `setup-till.ps1` on each checkout computer. Plain-language steps: `branch-edge/windows/README.txt`.
+* Design, event replay rules, guards and tests: [docs/offline-branch-box.md](docs/offline-branch-box.md).
+* Outage drill (local): `python branch-edge/tools/outage_drill.py --creds <creds.json>`.
 
 ## Accounting conventions
 

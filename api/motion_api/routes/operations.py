@@ -547,6 +547,14 @@ def edge_snapshot(request: Request):
     return MotionJSON(t.run(lambda: sync.snapshot(sync.authenticate_device(token)), user=0))
 
 
+@router.get("/edge/heartbeat")
+def edge_heartbeat(request: Request):
+    """Cheap liveness check for a branch box (no snapshot)."""
+    token = _device_token(request)
+    t.run(lambda: sync.authenticate_device(token), user=0)
+    return MotionJSON({"ok": True})
+
+
 class EdgeEventsIn(BaseModel):
     events: list[dict] = Field(min_length=1, max_length=200)
 
@@ -575,6 +583,8 @@ def _sync_event(token: str | None, eid: str, event: dict) -> dict:
     try:
         try:
             return t.run(process, user=0, op_key="edge.sale")
+        except sync.NotReady as wait:
+            return {"event_id": eid, "status": "retry", "error": str(wait)}
         except (AppError, t.EngineError) as exc:
             message = exc.message if isinstance(exc, AppError) else str(exc)
             try:

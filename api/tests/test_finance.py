@@ -99,7 +99,12 @@ def test_bank_deposit_moves_cash_from_safe_to_bank(login, ids):
     assert too_much.status_code == 422  # cannot bank more than the safe holds
     if safe >= 1000:
         bank0 = account_balance("1.1.1.03", sth)
-        r = acc.post("/api/finance/bank-deposits", {"branch_id": sth, "amount": "1000", "date": "2026-11-15", "reference": "SLIP-3", "idempotency_key": new_key()})
+        # Deposit dated today: the safe may only have received this cash today (a deposit dated earlier
+        # would bank money the safe did not hold yet, which the endpoint correctly refuses).
+        from motion_api import tryton as t
+        from motion_api.services import common
+        today = t.run(common.today, readonly=True).isoformat()
+        r = acc.post("/api/finance/bank-deposits", {"branch_id": sth, "amount": "1000", "date": today, "reference": "SLIP-3", "idempotency_key": new_key()})
         assert r.status_code == 201, r.text
         assert account_balance("1.1.1.03", sth) - bank0 == 1000
         assert safe - account_balance("1.1.1.02", sth) == 1000

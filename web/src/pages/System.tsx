@@ -20,18 +20,18 @@ export default function SystemPage() {
   return (
     <div>
       <PageHeader title="System & branch devices" subtitle="Technical administration only — no business approvals or financial data here."
-        actions={can('sync.devices') && <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setOpen(true)}>Register branch edge</Button>} />
+        actions={can('sync.devices') && <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setOpen(true)}>Register branch box</Button>} />
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi label="API" value={health.data?.ready ? 'Ready' : health.data?.phase ?? '…'} tone={health.data?.ready ? 'good' : 'warn'} hint={`v${health.data?.version ?? '?'} · up ${Math.round((health.data?.uptime_s ?? 0) / 60)} min`} icon={<ServerCog className="size-4" />} />
         {dash.data && <Kpi label="Database size" value={dash.data.db_size} icon={<HardDrive className="size-4" />} />}
         {dash.data && <Kpi label="Platform migrations" value={dash.data.migrations.length} hint={dash.data.migrations.map((m: R) => m.version).join(', ')} />}
       </div>
       <Card>
-        <CardHeader title="Branch edge devices" subtitle="On-premise servers that keep tills selling during internet outages and sync to this system." />
+        <CardHeader title="Branch boxes" subtitle="The program on each branch's back-office PC that keeps the tills selling without internet and uploads automatically." />
         {devices.isLoading ? <LoadingBlock /> : devices.data?.devices.length ? (
           <Table><thead><tr><Th>Device</Th><Th>Branch</Th><Th>Last sync</Th><Th align="right">Events</Th><Th align="right">Conflicts</Th><Th>Status</Th></tr></thead>
             <tbody>{devices.data.devices.map((d: R) => <tr key={d.id}><Td>{d.name}</Td><Td>{d.branch_code}</Td><Td title={dateTime(d.last_seen_at)}>{relative(d.last_seen_at)}</Td><Td align="right">{d.events}</Td><Td align="right">{d.conflicts}</Td><Td>{d.revoked_at ? <StatusChip status="cancelled" label="Revoked" /> : <StatusChip status="active" />}</Td></tr>)}</tbody></Table>
-        ) : <Empty title="No branch edge devices registered" />}
+        ) : <Empty title="No branch boxes registered" />}
         {devices.error && <div className="p-4"><ErrorBox error={devices.error} /></div>}
       </Card>
       {(devices.data?.recent?.length ?? 0) > 0 && (
@@ -42,8 +42,8 @@ export default function SystemPage() {
       )}
       {open && <RegisterDevice onClose={() => setOpen(false)} onToken={(t) => { setOpen(false); setToken(t); qc.invalidateQueries({ queryKey: ['devices'] }) }} />}
       {token && (
-        <Modal open onOpenChange={(v) => !v && setToken(null)} title="Device token" footer={<Button variant="primary" onClick={() => setToken(null)}>I have stored it</Button>}>
-          <Notice tone="warn">Copy this into the branch edge's configuration (MOTION_EDGE_TOKEN). It is shown only once; only its hash is stored. Revoke the device if it is lost.</Notice>
+        <Modal open onOpenChange={(v) => !v && setToken(null)} title="Branch box token" footer={<Button variant="primary" onClick={() => setToken(null)}>I have stored it</Button>}>
+          <Notice tone="warn">Enter this token when you run install-box.ps1 on the branch's back-office PC. It is shown only once (only its hash is stored). Revoke the box here if the token is lost or the PC is replaced.</Notice>
           <div className="mt-4 break-all rounded-xl border border-line-strong bg-surface-2 p-4 font-mono text-[13px]">{token}</div>
         </Modal>
       )}
@@ -57,7 +57,7 @@ function RegisterDevice({ onClose, onToken }: { onClose: () => void; onToken: (t
   const [name, setName] = useState('')
   const m = useMutation({ mutationFn: () => api.post<R>('/api/sync/devices', { branch_id: branch, name }), onSuccess: (r) => onToken(r.token) })
   return (
-    <Modal open onOpenChange={(v) => !v && onClose()} title="Register a branch edge device"
+    <Modal open onOpenChange={(v) => !v && onClose()} title="Register a branch box"
       footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={m.isPending} disabled={!branch || name.length < 2} onClick={() => m.mutate()}>Register</Button></>}>
       <div className="space-y-3">
         <Field label="Branch" htmlFor="db"><Select id="db" value={branch} onChange={(e) => setBranch(Number(e.target.value))}><option value="">Choose…</option>{all.data?.directory.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</Select></Field>

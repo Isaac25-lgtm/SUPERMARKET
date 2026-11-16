@@ -1,10 +1,10 @@
-"""Branch edge HTTP API + background sync loop.
+"""Branch box: the till API and till screen for the branch LAN, plus the background sync loop.
+
+Run it with ``python -m motion_edge`` (HTTPS on the LAN, see ``__main__.py``) or, for development:
 
     MOTION_EDGE_CENTRAL_URL=https://<render-app>.onrender.com \
     MOTION_EDGE_TOKEN=edge_... MOTION_EDGE_DB=./data/edge.sqlite3 \
     uvicorn motion_edge.app:app --host 127.0.0.1 --port 8080
-
-Use a TLS reverse proxy for the branch LAN and firewall it from the internet.
 """
 from __future__ import annotations
 
@@ -12,15 +12,15 @@ import json
 import logging
 import os
 import threading
-import time
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Header, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from . import service
+from . import service, webapi
 from .store import Store
 
 logger = logging.getLogger("motion.edge")
@@ -54,15 +54,20 @@ def create_app(store: Store | None = None, client: httpx.Client | None = None, s
     store = store or Store(os.environ.get("MOTION_EDGE_DB", "./data/edge.sqlite3"))
     if client is None:
         central_url = httpx.URL(os.environ["MOTION_EDGE_CENTRAL_URL"])
-        if central_url.scheme != "https" or not central_url.host:
+        dev_loopback = (os.environ.get("MOTION_EDGE_ALLOW_INSECURE_CENTRAL") == "1"
+                        and central_url.host in {"127.0.0.1", "localhost", "::1"})
+        if (central_url.scheme != "https" and not dev_loopback) or not central_url.host:
             raise RuntimeError("The central edge URL must use HTTPS.")
         client = httpx.Client(base_url=central_url,
                               headers={"Authorization": f"Bearer {os.environ['MOTION_EDGE_TOKEN']}"})
     syncer = service.Syncer(store, client)
     app = FastAPI(title="Motion branch edge", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.syncer = store, syncer
-    interval = float(os.environ.get("MOTION_EDGE_SYNC_SECONDS", "15"))
+    # Sales are forwarded as soon as they are recorded (the till wakes the loop); otherwise the box
+    # checks in every few seconds, and retries an unreachable head office at most once a minute.
+    interval = float(os.environ.get("MOTION_EDGE_SYNC_SECONDS", "5"))
     auth_workers = threading.BoundedSemaphore(3)
+    app.state.auth_workers = auth_workers
 
     @app.middleware("http")
     async def protect_till(request: Request, call_next):
@@ -72,7 +77,8 @@ def create_app(store: Store | None = None, client: httpx.Client | None = None, s
         ):
             return JSONResponse({"message": "Connect to the branch till using HTTPS."}, status_code=403)
         response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
+        if "cache-control" not in response.headers:
+            response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
@@ -84,9 +90,10 @@ def create_app(store: Store | None = None, client: httpx.Client | None = None, s
     def loop():
         backoff = interval
         while True:
-            r = syncer.sync_once()
-            backoff = interval if r["ok"] else min(backoff * 2, 300)
-            time.sleep(backoff)
+            r = syncer.sync_once(force_pull=False)
+            backoff = interval if r["ok"] else min(backoff * 2, 60)
+            syncer.wake.wait(timeout=backoff)
+            syncer.wake.clear()
 
     if start_loop:
         @app.on_event("startup")
@@ -96,6 +103,10 @@ def create_app(store: Store | None = None, client: httpx.Client | None = None, s
     @app.exception_handler(service.EdgeError)
     async def _err(request: Request, exc: service.EdgeError):
         return JSONResponse({"error": "edge", "message": exc.message}, status_code=exc.status)
+
+    @app.exception_handler(RequestValidationError)
+    async def _invalid(request: Request, exc: RequestValidationError):
+        return JSONResponse({"error": "invalid", "message": "Some fields are missing or invalid."}, status_code=422)
 
     def tok(authorization: str | None) -> str | None:
         return authorization[7:] if authorization and authorization.lower().startswith("bearer ") else None
@@ -155,14 +166,18 @@ def create_app(store: Store | None = None, client: httpx.Client | None = None, s
 
     page = Path(__file__).with_name("till.html")
 
-    @app.get("/")
-    def till():
+    # Basic fallback page (cash sales only), kept for troubleshooting at /basic.
+    @app.get("/basic")
+    def basic_till():
         return FileResponse(page, headers={"Cache-Control": "no-cache"})
 
     @app.get("/till.js")
     def till_script():
         return FileResponse(page.with_suffix(".js"), media_type="text/javascript")
 
+    app.include_router(webapi.build_router(app.state))
+    web_dir = Path(os.environ.get("MOTION_EDGE_WEB_DIR") or Path(__file__).with_name("web"))
+    webapi.mount_web(app, web_dir)
     return app
 
 

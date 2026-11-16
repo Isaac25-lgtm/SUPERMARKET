@@ -149,7 +149,7 @@ def get_settings() -> Settings:
         ai_hourly_limit=int(os.environ.get("MOTION_AI_HOURLY_LIMIT", "30")),
         login_max_failures=int(os.environ.get("MOTION_LOGIN_MAX_FAILURES", "5")),
         login_lock_minutes=int(os.environ.get("MOTION_LOGIN_LOCK_MINUTES", "15")),
-        offline_grant_hours=int(os.environ.get("MOTION_OFFLINE_GRANT_HOURS", "12")),
+        offline_grant_hours=int(os.environ.get("MOTION_OFFLINE_GRANT_HOURS", "24")),
         # Password-less "continue as" sign-in: only on a demo deployment with the TEST DATA banner.
         open_demo=open_demo and demo_mode and deployment == "demo",
         seed_demo=seed_demo and deployment == "demo",
