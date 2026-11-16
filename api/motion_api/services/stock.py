@@ -315,13 +315,21 @@ def discrepancies(actor: Principal, *, status: str | None = "open", branch_id: i
     actor.require_any("stock.view", "pos.shift.reconcile", "finance.view")
     if branch_id is not None:
         actor.require_branch(branch_id, action="stock.discrepancies")
-    return t.sql("""SELECT d.*, b.code AS branch_code, pt.name AS product_name FROM motion.discrepancy d
+    # A transfer discrepancy is owned by the sending branch (write-off) but the receiving branch
+    # records a late arrival, so both branches see it.
+    branches = sorted(actor.branch_ids)
+    return t.sql("""SELECT d.*, b.code AS branch_code, pt.name AS product_name,
+                           tr.to_branch_id, tb.code AS to_branch_code
+                    FROM motion.discrepancy d
                     JOIN motion_branch b ON b.id=d.branch_id
+                    LEFT JOIN motion.transfer tr ON d.source_type='transfer' AND tr.id::text=d.source_id
+                    LEFT JOIN motion_branch tb ON tb.id=tr.to_branch_id
                     LEFT JOIN product_product pp ON pp.id=d.product_id LEFT JOIN product_template pt ON pt.id=pp.template
-                    WHERE (%s::text IS NULL OR d.status=%s) AND (%s::int IS NULL OR d.branch_id=%s)
-                      AND (%s OR d.branch_id=ANY(%s))
+                    WHERE (%s::text IS NULL OR d.status=%s)
+                      AND (%s::int IS NULL OR d.branch_id=%s OR tr.to_branch_id=%s)
+                      AND (%s OR d.branch_id=ANY(%s) OR tr.to_branch_id=ANY(%s))
                     ORDER BY d.created_at DESC, d.id DESC LIMIT 300""",
-                 (status, status, branch_id, branch_id, actor.all_branches, sorted(actor.branch_ids)))
+                 (status, status, branch_id, branch_id, branch_id, actor.all_branches, branches, branches))
 
 
 def request_writeoff(actor: Principal, *, branch_id: int, product_id: int, quantity: Decimal, reason: str,

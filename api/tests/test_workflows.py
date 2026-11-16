@@ -43,6 +43,10 @@ def test_transfer_100_dispatched_95_received(login, ids):
     assert q1("SELECT count(*) AS n FROM account_move")["n"] == moves0  # internal moves create no journal entries
     disc = q1("SELECT * FROM motion.discrepancy WHERE source_type='transfer' AND source_id=%s", (str(tr["id"]),))
     assert disc["kind"] == "transfer_shortage" and D(disc["quantity"]) == 5
+    # The receiving branch (North) sees the discrepancy in its queue: it records late arrivals.
+    seen = sarah.get("/api/stock/discrepancies", branch_id=ids["branch"]["NTH"]).json()["discrepancies"]
+    assert disc["id"] in {d["id"] for d in seen}
+    assert next(d for d in seen if d["id"] == disc["id"])["to_branch_code"] == "NTH"
     # Authorised write-off of the 5 units: transit -> lost & found, expensed as shrinkage (not COGS)
     shrink0, cogs0 = account_balance("5.1.1.03"), account_balance("5.1.1.01")
     wo = login("inv.ruth").post("/api/stock/writeoffs", {"branch_id": ids["branch"]["CEN"], "product_id": water, "quantity": 5,

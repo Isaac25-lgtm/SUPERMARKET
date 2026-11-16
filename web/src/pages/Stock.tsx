@@ -81,12 +81,14 @@ function Products() {
 }
 
 function Discrepancies() {
-  const { branchId, can } = useAuth()
+  const { branchId, can, me } = useAuth()
   const qc = useQueryClient()
   const toast = useToast()
   const [status, setStatus] = useState('open')
   const q = useQuery({ queryKey: ['discrepancies', branchId, status], queryFn: () => api.get<{ discrepancies: R[] }>('/api/stock/discrepancies', { branch_id: branchId, status }) })
   const [act, setAct] = useState<{ d: R; mode: 'writeoff' | 'late' } | null>(null)
+  // Late arrivals are confirmed by the receiving branch; write-offs are requested by the owning (sending) branch.
+  const inBranch = (id: number | null | undefined) => !!id && (!!me?.all_branches || !!me?.branches.some((b) => b.id === id))
   return (
     <Card>
       <div className="flex items-center gap-2 border-b border-line p-3">
@@ -98,15 +100,15 @@ function Discrepancies() {
           <thead><tr><Th>Raised</Th><Th>Type</Th><Th>Branch</Th><Th>Product / source</Th><Th align="right">Qty</Th><Th align="right">Value</Th><Th>Status</Th><Th /></tr></thead>
           <tbody>{q.data.discrepancies.map((d) => (
             <tr key={d.id}>
-              <Td>{dateTime(d.created_at)}</Td><Td>{humanize(d.kind)}</Td><Td>{d.branch_code}</Td>
+              <Td>{dateTime(d.created_at)}</Td><Td>{humanize(d.kind)}</Td><Td>{d.branch_code}{d.to_branch_code ? ` → ${d.to_branch_code}` : ''}</Td>
               <Td>{d.product_name ?? '—'}<div className="text-[12px] text-muted">{d.source_type} {d.detail?.ref ?? d.source_id}{d.detail?.note ? ` · ${d.detail.note}` : ''}</div></Td>
               <Td align="right">{d.quantity === null ? '—' : qty(d.quantity)}</Td><Td align="right">{d.amount === null ? '—' : money(d.amount)}</Td>
               <Td><StatusChip status={d.status} />{d.resolution && <div className="text-[12px] text-muted">{humanize(d.resolution)}</div>}</Td>
               <Td align="right">
                 {d.status === 'open' && ['transfer_shortage', 'transfer_damage'].includes(d.kind) && (
                   <div className="flex justify-end gap-1.5">
-                    {d.kind === 'transfer_shortage' && can('transfer.receive') && <Button size="sm" onClick={() => setAct({ d, mode: 'late' })}>Arrived late</Button>}
-                    {can('stock.adjust.request') && <Button size="sm" onClick={() => setAct({ d, mode: 'writeoff' })}>Request write-off</Button>}
+                    {d.kind === 'transfer_shortage' && can('transfer.receive') && inBranch(d.to_branch_id) && <Button size="sm" onClick={() => setAct({ d, mode: 'late' })}>Arrived late</Button>}
+                    {can('stock.adjust.request') && inBranch(d.branch_id) && <Button size="sm" onClick={() => setAct({ d, mode: 'writeoff' })}>Request write-off</Button>}
                   </div>
                 )}
                 {d.kind === 'cash_variance' && d.status === 'open' && <Link className="text-[13px] text-accent hover:underline" to="/shifts">Review shift</Link>}

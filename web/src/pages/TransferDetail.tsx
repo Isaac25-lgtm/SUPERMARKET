@@ -36,6 +36,9 @@ export default function TransferDetailPage() {
   const t = q.data!
   const inFrom = me?.branches.some((b) => b.id === t.from_branch_id) || me?.all_branches
   const inTo = me?.branches.some((b) => b.id === t.to_branch_id) || me?.all_branches
+  // Segregation of duties: whoever dispatched cannot confirm the receipt (enforced by the server).
+  const dispatchedByMe = t.dispatched_by === me?.id
+  const canReceive = t.status === 'dispatched' && can('transfer.receive') && inTo && !dispatchedByMe
   const allCounted = t.lines.filter((line: R) => num(line.dispatched_qty) > 0)
     .every((line: R) => !!counts[line.product_id]?.received.trim())
   return (
@@ -48,14 +51,17 @@ export default function TransferDetailPage() {
             <Table><thead><tr><Th>Product</Th><Th align="right">Requested</Th><Th align="right">Dispatched</Th><Th align="right">Received</Th><Th align="right">Damaged</Th><Th align="right">Unresolved</Th></tr></thead>
               <tbody>{t.lines.map((l: R) => { const open = num(l.dispatched_qty) - num(l.received_qty) - num(l.damaged_qty); return (
                 <tr key={l.id}><Td>{l.product_name}</Td><Td align="right">{qty(l.requested_qty, l.uom)}</Td><Td align="right">{l.dispatched_qty === null ? '—' : qty(l.dispatched_qty, l.uom)}</Td>
-                  <Td align="right">{t.status === 'dispatched' && can('transfer.receive') && inTo ? <input aria-label={`Received ${l.product_name}`} inputMode="decimal" placeholder={String(num(l.dispatched_qty))} value={counts[l.product_id]?.received ?? ''} onChange={(e) => setCounts((c) => ({ ...c, [l.product_id]: { received: e.target.value, damaged: c[l.product_id]?.damaged ?? '' } }))} className="h-8 w-20 rounded-md border border-line px-2 text-right" /> : l.received_qty === null ? '—' : qty(l.received_qty, l.uom)}</Td>
-                  <Td align="right">{t.status === 'dispatched' && can('transfer.receive') && inTo ? <input aria-label={`Damaged ${l.product_name}`} inputMode="decimal" placeholder="0" value={counts[l.product_id]?.damaged ?? ''} onChange={(e) => setCounts((c) => ({ ...c, [l.product_id]: { received: c[l.product_id]?.received ?? '', damaged: e.target.value } }))} className="h-8 w-20 rounded-md border border-line px-2 text-right" /> : qty(l.damaged_qty, l.uom)}</Td>
+                  <Td align="right">{canReceive ? <input aria-label={`Received ${l.product_name}`} inputMode="decimal" placeholder={String(num(l.dispatched_qty))} value={counts[l.product_id]?.received ?? ''} onChange={(e) => setCounts((c) => ({ ...c, [l.product_id]: { received: e.target.value, damaged: c[l.product_id]?.damaged ?? '' } }))} className="h-8 w-20 rounded-md border border-line px-2 text-right" /> : l.received_qty === null ? '—' : qty(l.received_qty, l.uom)}</Td>
+                  <Td align="right">{canReceive ? <input aria-label={`Damaged ${l.product_name}`} inputMode="decimal" placeholder="0" value={counts[l.product_id]?.damaged ?? ''} onChange={(e) => setCounts((c) => ({ ...c, [l.product_id]: { received: c[l.product_id]?.received ?? '', damaged: e.target.value } }))} className="h-8 w-20 rounded-md border border-line px-2 text-right" /> : qty(l.damaged_qty, l.uom)}</Td>
                   <Td align="right" className={t.received_at && open > 0 ? 'font-semibold text-warn' : ''}>{t.received_at ? qty(Math.max(0, open), l.uom) : '—'}</Td></tr>) })}</tbody></Table>
           </Card>
           {t.status === 'approved' && can('transfer.dispatch') && inFrom && (
             <Card className="p-5"><div className="flex items-center justify-between gap-3"><div><div className="font-semibold">Ready to dispatch</div><p className="text-[13px] text-muted">Dispatching moves the stock out of {t.from_branch} into transit. Stock is checked again now.</p></div><Button variant="primary" icon={<Truck className="size-4" />} loading={dispatch.isPending} onClick={() => dispatch.mutate()}>Dispatch</Button></div><ErrorBox error={dispatch.error} className="mt-3" /></Card>
           )}
-          {t.status === 'dispatched' && can('transfer.receive') && inTo && (
+          {t.status === 'dispatched' && can('transfer.receive') && inTo && dispatchedByMe && (
+            <Notice>You dispatched this transfer, so another colleague at {t.to_branch} must confirm what arrived.</Notice>
+          )}
+          {canReceive && (
             <Card className="space-y-3 p-5">
               <div className="font-semibold">Confirm what arrived</div>
               <p className="text-[13px] text-muted">Enter a count for every dispatched product. Enter zero if none arrived. Missing units stay in transit as a discrepancy.</p>
