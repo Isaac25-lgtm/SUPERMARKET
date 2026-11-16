@@ -8,6 +8,7 @@ import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { z } from 'zod'
 import { api } from '../api/client'
 import { ROLE_LABELS, primaryRole, useAuth } from '../auth/auth'
+import { NatureLeaves } from '../components/NatureLeaves'
 import { RoleIcon } from '../components/RoleIcon'
 import { Button, ErrorBox, Field, Input, TestDataBadge } from '../components/ui'
 
@@ -56,7 +57,8 @@ export function LoginPage() {
           </ul>
         </div>
       </section>
-      <section className="flex items-center justify-center px-6 py-12">
+      <section className="nature-backdrop relative isolate flex items-center justify-center overflow-hidden px-6 py-12">
+        <NatureLeaves />
         <div className="w-full max-w-[380px]">
           <div className="mb-8 lg:hidden">
             <img src="/favicon.svg" alt="" className="size-10" />
@@ -109,7 +111,8 @@ function DemoPicker({ brand }: { brand: string }) {
   const order = ['owner', 'general_manager', 'accountant', 'operations_manager', 'inventory_manager', 'branch_manager', 'cashier', 'sysadmin']
   const accounts = [...(q.data?.accounts ?? [])].sort((x, y) => order.indexOf(primaryRole(x.roles)) - order.indexOf(primaryRole(y.roles)))
   return (
-    <div className="min-h-full px-6 py-10">
+    <div className="nature-backdrop relative isolate min-h-full overflow-hidden px-4 py-10 sm:px-6">
+      <NatureLeaves />
       <div className="mx-auto max-w-5xl">
         <div className="flex flex-wrap items-center gap-3">
           <img src="/favicon.svg" alt="" className="size-10" />

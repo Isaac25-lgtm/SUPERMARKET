@@ -129,6 +129,34 @@ body {
 }
 @media (forced-colors: active) { .role-tile { border: 1px solid CanvasText; } }
 
+/* Sign-in / account picker backdrop: morning light over sage and warm sand, with a faint paper grain. */
+.nature-backdrop {
+  --leaf: #4f7a5a;
+  --leaf-2: #86a97c;
+  --sun: #f2d9a0;
+  background-color: #f3f6ef;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.3  0 0 0 0 0.35  0 0 0 0 0.25  0 0 0 .05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+    radial-gradient(900px 520px at 88% -8%, color-mix(in oklab, var(--sun) 70%, transparent), transparent 62%),
+    radial-gradient(1000px 640px at -6% 6%, color-mix(in oklab, #b9d6b4 70%, transparent), transparent 60%),
+    radial-gradient(1100px 700px at 50% 112%, color-mix(in oklab, #cfe3d3 80%, transparent), transparent 62%),
+    linear-gradient(180deg, #f7f8f1 0%, #eef4ec 55%, #e8f0e8 100%);
+}
+[data-theme="dark"] .nature-backdrop {
+  --leaf: #8fbf98;
+  --leaf-2: #5f8f6a;
+  --sun: #6b5a2e;
+  background-color: #0e1612;
+  background-image:
+    radial-gradient(900px 520px at 88% -8%, color-mix(in oklab, var(--sun) 45%, transparent), transparent 62%),
+    radial-gradient(1000px 640px at -6% 6%, color-mix(in oklab, #1f3a2a 85%, transparent), transparent 60%),
+    radial-gradient(1100px 700px at 50% 112%, color-mix(in oklab, #173226 85%, transparent), transparent 62%),
+    linear-gradient(180deg, #0f1713 0%, #0d1511 100%);
+}
+.nature-leaves { color: var(--leaf); }
+.nature-leaves .alt { color: var(--leaf-2); }
+@media (forced-colors: active) { .nature-backdrop { background: Canvas; } .nature-leaves { display: none; } }
+
 @keyframes shimmer { 0% { background-position: -400px 0 } 100% { background-position: 400px 0 } }
 .skeleton {
   background: linear-gradient(90deg, var(--color-surface-2) 0, var(--color-line) 50%, var(--color-surface-2) 100%);
