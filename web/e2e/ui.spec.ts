@@ -155,3 +155,43 @@ test('My access shows the account roles, branches and permissions and collapses'
   await expect(panel).toHaveCount(0)
   expect(errors).toEqual([])
 })
+
+test('Roles & permissions lists what every role does, and compares them', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await login(page, 'cash.cen1')
+  await page.goto('/pos')
+  await page.getByRole('button', { name: 'Account menu' }).click()
+  await page.getByRole('menuitem', { name: 'Roles & permissions' }).click()
+  const panel = page.getByRole('dialog', { name: 'Roles & permissions' })
+  const roles = panel.getByTestId('all-roles')
+  await expect(roles).toBeVisible()
+  // every role is listed; the viewer's own role is open and marked, the rest are collapsed
+  for (const name of ['Head Manager / Owner / CFO', 'General Manager', 'Accountant / Finance Manager', 'Operations Manager',
+    'Inventory / Stock Manager', 'Branch Manager', 'Cashier', 'System Administrator (technical)']) {
+    await expect(roles.getByRole('button', { name: new RegExp(name.replace(/[/()]/g, '.')) })).toBeVisible()
+  }
+  await expect(roles.getByText('Your role')).toBeVisible()
+  await expect(roles.getByText('Search the audit trail')).toHaveCount(0)
+  await roles.getByRole('button', { name: /Head Manager \/ Owner/ }).click()
+  await expect(roles.getByText('Search the audit trail')).toBeVisible()
+  await expect(roles.getByText('People with this role')).toHaveCount(0) // names are for user administrators only
+  await page.screenshot({ path: `${shots}/roles-by-role.png` })
+  await roles.getByRole('tab', { name: 'Compare roles' }).click()
+  await expect(roles.getByRole('columnheader', { name: 'Branch Mgr' })).toBeVisible()
+  await expect(roles.getByRole('rowheader', { name: 'Refunds' })).toBeVisible()
+  await page.screenshot({ path: `${shots}/roles-compare.png` })
+  // the same panel switches back to the viewer's own access
+  await panel.getByRole('tab', { name: 'My access' }).click()
+  await expect(page.getByRole('dialog', { name: 'My access' }).getByTestId('my-access')).toBeVisible()
+  expect(errors).toEqual([])
+})
+
+test('Head Manager sees who holds each role', async ({ page }) => {
+  await login(page, 'hm.owner')
+  await page.getByRole('button', { name: 'Account menu' }).click()
+  await page.getByRole('menuitem', { name: 'Roles & permissions' }).click()
+  const roles = page.getByRole('dialog', { name: 'Roles & permissions' }).getByTestId('all-roles')
+  await roles.getByRole('button', { name: /^Cashier/ }).click()
+  await expect(roles.getByText('People with this role').first()).toBeVisible()
+})

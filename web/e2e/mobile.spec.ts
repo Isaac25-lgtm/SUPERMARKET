@@ -36,6 +36,11 @@ test('phone: cashier till and My access fit the screen', async ({ page }) => {
   await expect(panel.getByText('Cashier', { exact: true })).toBeVisible()
   await noHorizontalScroll(page)
   await page.screenshot({ path: `${shots}/phone-my-access.png` })
+  await page.getByRole('tab', { name: 'All roles' }).click()
+  await page.getByRole('tab', { name: 'Compare roles' }).click()
+  await expect(page.getByRole('columnheader', { name: 'Branch Mgr' })).toBeAttached()
+  await noHorizontalScroll(page) // the comparison table scrolls inside its own box, not the page
+  await page.screenshot({ path: `${shots}/phone-roles-compare.png` })
   expect(errors).toEqual([])
 })
 

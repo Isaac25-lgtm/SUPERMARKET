@@ -103,6 +103,10 @@ offline-capable branch tills, and evidence-linked business insights.
 - **My access** (account menu, on every page including the till) shows the signed-in account's roles, branches,
   which approvals it can sign, and every permission grouped by area, with collapsible sections. The panel is
   informational: the server checks the same rights on every action.
+- **Roles & permissions** (account menu, or the *All roles* tab of the same panel) shows what every role is
+  responsible for, the approvals it can sign and its permissions, as collapsible role cards or a side-by-side
+  comparison table. Anyone signed in can read it; only the Head Manager (company-wide user administration) also
+  sees which people hold each role.
 - An **append-only audit trail** with search, drill-down and CSV export (exports are themselves audited).
 - Security alerts for repeated failed logins, bursts of privilege changes, denied actions and refund frequency.
 

@@ -200,6 +200,31 @@ def access_summary(roles: set[str] | list[str]) -> dict:
     }
 
 
+def roles_directory() -> dict:
+    """Every role: what it does, which approvals it may sign and its permissions by area.
+
+    Drives the "All roles" view so everyone can see who is responsible for what. It is the
+    same matrix the server enforces; nothing here is specific to a person.
+    """
+    roles = []
+    for r in ROLES:
+        perms = ROLE_PERMISSIONS[r.code]
+        areas = []
+        for label, prefixes in AREAS:
+            codes = [c for c in PERMISSIONS if c.startswith(prefixes) and c in perms]
+            if codes:
+                areas.append({"area": label, "permissions": [{"code": c, "label": PERMISSIONS[c]} for c in codes]})
+        roles.append({"code": r.code, "name": r.name, "description": r.description, "head_office": r.hq,
+                      "granted": len(perms), "areas": areas,
+                      "can_approve": [ACTION_LABELS[a] for a in ACTION_LABELS if r.code in APPROVER_ROLES[a]]})
+    matrix = [{"area": label, "permissions": [
+        {"code": c, "label": PERMISSIONS[c], "roles": [r.code for r in ROLES if c in ROLE_PERMISSIONS[r.code]]}
+        for c in PERMISSIONS if c.startswith(prefixes)]} for label, prefixes in AREAS]
+    approvals = [{"action": ACTION_LABELS[a], "roles": [r.code for r in ROLES if r.code in APPROVER_ROLES[a]]}
+                 for a in ACTION_LABELS]
+    return {"roles": roles, "matrix": matrix, "approvals": approvals, "total": len(PERMISSIONS)}
+
+
 def markdown() -> str:
     roles = [r.code for r in ROLES]
     head = "| Permission | " + " | ".join(roles) + " |"

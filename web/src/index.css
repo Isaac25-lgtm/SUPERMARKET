@@ -11,8 +11,8 @@
   --color-canvas: #f6f7f9;
   --color-surface: #ffffff;
   --color-surface-2: #f1f3f6;
-  --color-line: #e3e7ec;
-  --color-line-strong: #cdd4dc;
+  --color-line: #cbd3dc;
+  --color-line-strong: #a9b4c1;
   --color-ink: #121a24;
   --color-ink-2: #3d4856;
   --color-muted: #6b7684;
@@ -38,7 +38,7 @@
   --color-chart-5: #db2777;
 
   --radius-card: 14px;
-  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.04), 0 1px 3px rgb(16 24 40 / 0.06);
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 4px rgb(16 24 40 / 0.08);
   --shadow-pop: 0 12px 32px -8px rgb(16 24 40 / 0.18), 0 2px 6px rgb(16 24 40 / 0.06);
 }
 
@@ -46,8 +46,8 @@
   --color-canvas: #0d1218;
   --color-surface: #141b23;
   --color-surface-2: #1b2430;
-  --color-line: #263140;
-  --color-line-strong: #34414f;
+  --color-line: #354356;
+  --color-line-strong: #4a5a6e;
   --color-ink: #e8edf3;
   --color-ink-2: #b9c3cf;
   --color-muted: #8794a3;

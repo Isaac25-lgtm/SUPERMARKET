@@ -103,6 +103,32 @@ def auth_access(request: Request):
     return MotionJSON(unit_of_work(request, allow_pending_password(fn), readonly=True))
 
 
+@router.get("/auth/roles")
+def auth_roles(request: Request):
+    """Every role, what it does and its permissions. Any signed-in account may read it.
+
+    Only company-wide user administrators also get the names of the people holding each role.
+    """
+    from ..permissions import roles_directory
+
+    def fn(p):
+        out = roles_directory()
+        out["my_roles"] = sorted(p.roles)
+        out["shows_people"] = "admin.users" in p.permissions and p.all_branches
+        if out["shows_people"]:
+            people: dict[str, list[dict]] = {}
+            for row in t.sql("""
+                    SELECT r.role_code, u.username, u.full_name FROM motion.user_role r
+                    JOIN motion.app_user u ON u.id = r.user_id
+                    WHERE u.status = 'active' ORDER BY u.full_name"""):
+                people.setdefault(row["role_code"], []).append(
+                    {"username": row["username"], "full_name": row["full_name"]})
+            for r in out["roles"]:
+                r["people"] = people.get(r["code"], [])
+        return out
+    return MotionJSON(unit_of_work(request, allow_pending_password(fn), readonly=True))
+
+
 class PasswordIn(BaseModel):
     current_password: str
     new_password: str = Field(min_length=10, max_length=200)

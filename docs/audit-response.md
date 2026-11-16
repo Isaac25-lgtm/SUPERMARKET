@@ -64,6 +64,17 @@ what is listed under "review fixes", and re-ran the suites.
 account's roles, branches, approval authority and all permissions grouped by area, with collapsible sections. The
 data comes from `GET /api/auth/access`, built from `permissions.py`. Tests: `test_my_access.py` and the E2E spec "My access …".
 
+**Roles & permissions (all roles).** The same panel has an **All roles** tab (also opened directly from the account menu
+as "Roles & permissions"). It explains every role: its responsibility, head-office or branch, the approvals it can sign
+and its permissions by area, as collapsible cards (the viewer's own role is open and marked), plus a **Compare roles**
+table of every permission and approval type against all eight roles. Data: `GET /api/auth/roles`, generated from the
+same matrix the server enforces (`roles_directory()` in `permissions.py`). Any signed-in account can read it; the names
+of people holding each role are returned only to company-wide user administrators. Tests check the directory matches
+the matrix exactly, that names are withheld from cashiers and branch managers, and the phone layout.
+
+**Clearer borders.** The shared border colours were darkened (light and dark themes) and card shadows strengthened, so
+cards, tables, inputs and panels have a visible edge on bright screens.
+
 ## Still open (decisions and operations, not code)
 - **Finance:**
   - refund-to-tender policy;

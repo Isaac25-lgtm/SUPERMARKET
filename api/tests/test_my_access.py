@@ -37,3 +37,39 @@ def test_access_summary_requires_sign_in():
     from motion_api.main import app
 
     assert TestClient(app).get("/api/auth/access").status_code == 401
+
+
+def test_roles_directory_matches_matrix_and_hides_people_from_non_admins(login):
+    from motion_api.permissions import APPROVER_ROLES, ROLES
+
+    cashier = login("cash.nth1").get("/api/auth/roles")
+    assert cashier.status_code == 200, cashier.text
+    body = cashier.json()
+    assert [r["code"] for r in body["roles"]] == [r.code for r in ROLES]
+    assert body["my_roles"] == ["cashier"] and body["shows_people"] is False
+    assert all("people" not in r for r in body["roles"])
+    for r in body["roles"]:
+        codes = {p["code"] for a in r["areas"] for p in a["permissions"]}
+        assert codes == ROLE_PERMISSIONS[r["code"]] and r["granted"] == len(codes)
+    # the comparison matrix lists every permission once, with exactly the roles that hold it
+    rows = {p["code"]: set(p["roles"]) for a in body["matrix"] for p in a["permissions"]}
+    assert set(rows) == set(PERMISSIONS)
+    assert all(rows[c] == {r for r, ps in ROLE_PERMISSIONS.items() if c in ps} for c in rows)
+    assert len(body["approvals"]) == len(APPROVER_ROLES)
+    bm = next(r for r in body["roles"] if r["code"] == "branch_manager")
+    assert "Refunds" in bm["can_approve"] and "Supplier payments" not in bm["can_approve"]
+
+    # a branch manager (not a company-wide admin) also gets no names
+    assert login("bm.sarah").get("/api/auth/roles").json()["shows_people"] is False
+
+    owner = login("hm.owner").get("/api/auth/roles").json()
+    assert owner["shows_people"] is True
+    cashiers = next(r for r in owner["roles"] if r["code"] == "cashier")["people"]
+    assert "cash.nth1" in {u["username"] for u in cashiers}
+
+
+def test_roles_directory_requires_sign_in():
+    from fastapi.testclient import TestClient
+    from motion_api.main import app
+
+    assert TestClient(app).get("/api/auth/roles").status_code == 401
