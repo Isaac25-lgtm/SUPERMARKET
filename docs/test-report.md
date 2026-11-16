@@ -9,7 +9,7 @@ Command:
 ```bash
 MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest -q
 ```
-Latest result (16 Nov 2026, with the branch box): **121 passed, 0 failed, 0 skipped** (~145 s, plus ~3 min the first time while the fixture template
+Latest result (16 Nov 2026, branch box 0.2.1): **134 passed, 0 failed, 0 skipped** (on Windows with the built exe; `test_uninstall_script.py` skips elsewhere) (~145 s, plus ~3 min the first time while the fixture template
 builds).
 
 | File | Scope |
@@ -25,6 +25,8 @@ builds).
 | `test_my_access.py` | My access: each account sees exactly its own roles, branches, permissions (all labelled) and approval authority; Roles & permissions: the all-roles directory matches the enforced matrix, names of role holders only for company-wide admins; sign-in required |
 | `test_barcodes.py` | GS1 check digits, UPC-A/EAN-13 equivalence, multiple barcodes per product, duplicate rejection, audited add/remove, unknown-barcode message |
 | `test_stage2_money.py` | Codex stage 2: idempotent sale/refund/deposit (replay, changed payload, per-cashier scope, two-thread duplicate), half-even weighted lines, partial refunds closing gross and VAT exactly, one open refund per receipt, duplicate lines, cash-only till refunds, original-VAT reversal, close-vs-checkout serialization |
+| `test_branch_box_cert.py` | branch box trust root stable across a DHCP address change while the server certificate is reissued; real TLS handshakes by PC name and address; public-site certificates forged with the issuer key refused; root key never stored; `--outbox-status` for empty / accepted / pending / awaiting review / unreadable |
+| `test_uninstall_script.py` | the real `uninstall-box.ps1` + packaged exe against disposable folders: pending blocks removal; awaiting review keeps data even with `-Force`; stopped box with everything accepted removes cleanly; unreadable DB and missing program keep data; only `-ForceRemoveData` drops unsent sales |
 | `test_branch_box.py` | the branch box's till API over HTTPS with head office unplugged: cookie session + CSRF, shift, weighed sale with in-person discount approval (wrong password refused, approval single use), card + mobile money, refund approved in person (replay-safe, card part refused in cash), blind close; reconnect → head office shift closed with the right expected cash and variance, all 4 transactions on it, refund approval consumed, stock, no duplicates on resend, ledger balanced; managers cannot run a till; 24-hour offline limit; dependency `retry`; a till with an online shift cannot get a box shift |
 | `test_offline.py` | 35 offline sales on 2 tills, restart durability, central price change during outage, exactly-once sync, duplicate resend, stock reconciliation, attribution, edge last-unit race, suspended user losing offline access, outbox immutability, device revocation |
 

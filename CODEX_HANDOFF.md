@@ -86,7 +86,8 @@ unknown. Full write-up: `docs/offline-branch-box.md` (read it first).
 
 ## Open items (priority order)
 
-1. **Pilot install on a real branch PC.** The exe was built and passed the drill on the dev PC, but the admin
+0. Your review items in `CLAUDE_BRANCH_BOX_HANDOFF.md` are fixed (see its status note); package 0.2.1.
+1. **Pilot install on a real branch PC.** Follow "Pilot checklist" in `docs/offline-branch-box.md`. The exe was built and passed the drill on the dev PC, but the admin
    steps in `install-box.ps1` / `setup-till.ps1` (scheduled task, firewall, LocalMachine\Root import, shortcut,
    Edge app window, silent printing to a USB receipt printer) have **not been run on a real machine**. Verify
    Chrome/Edge accept the name-constrained self-signed root; then a two-till outage drill and a power cut on the UPS.

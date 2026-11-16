@@ -36,7 +36,15 @@ if ($answer -notmatch "^[Yy]") { Remove-Item $tmp; throw "Stopped: the fingerpri
 Import-Certificate -FilePath $tmp -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
 Remove-Item $tmp
 
-$url = "https://$($Box):$HttpsPort/"
+# Use the back-office PC's name, not its address: the name survives DHCP address changes, and the box
+# renews its server certificate for a new address by itself (the trust root installed above stays).
+$name = $Box
+try { $name = ((Invoke-WebRequest -UseBasicParsing "http://$($Box):$HttpPort/name" -TimeoutSec 10).Content).Trim() } catch { }
+try { [Net.Dns]::GetHostAddresses($name) | Out-Null } catch {
+    Write-Host "This computer cannot find '$name' by name; using '$Box' instead. Ask for a fixed (reserved) address for the back-office PC." -ForegroundColor Yellow
+    $name = $Box
+}
+$url = "https://$($name):$HttpsPort/"
 try {
     Invoke-WebRequest -UseBasicParsing "$($url)api/meta" -TimeoutSec 10 | Out-Null
 } catch {

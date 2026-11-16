@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -40,6 +42,14 @@ def stop(proc: subprocess.Popen) -> None:
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, check=False)  # noqa: S603, S607
     else:
         proc.terminate()
+
+
+def verify_tls(ca_path: Path) -> None:
+    """Certificate check WITHOUT bypass: trust only the box's root and validate the PC name, as a till does."""
+    ctx = ssl.create_default_context(cafile=str(ca_path))
+    for name in (socket.gethostname(), "127.0.0.1"):
+        with socket.create_connection(("127.0.0.1", 8443), timeout=10) as raw, ctx.wrap_socket(raw, server_hostname=name) as tls:
+            print(f"TLS verified for {name}: {tls.version()}", flush=True)
 
 
 def main() -> int:
@@ -101,6 +111,7 @@ def main() -> int:
         else:
             raise SystemExit("The branch box did not finish its first update from head office.")
         print("box ready; fingerprint", (data / "box-fingerprint.txt").read_text(encoding="utf-8"), flush=True)
+        verify_tls(data / "box-ca.pem")
         e2e_env = {**os.environ, "E2E_BOX_URL": "https://127.0.0.1:8443", "E2E_WAN_FLAG": str(flag),
                    "E2E_CREDS": str(Path(args.creds).resolve()), "E2E_BOX_CASHIER": args.cashier,
                    "E2E_CENTRAL_URL": args.central}

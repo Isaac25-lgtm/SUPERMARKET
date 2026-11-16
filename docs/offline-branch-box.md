@@ -49,6 +49,30 @@ Decisions (16 Nov 2026, with the client's representative):
   upload and the box shows it on reprints. Refunds at the box are for receipts recorded by this box; older
   or other-branch receipts are refunded online through the approval inbox.
 
+## Certificates and till trust
+* On first start the box creates a **trust root** (20 years). Its private key is used once to sign an
+  **issuer** certificate and is never written to disk. The tills install only the root (after comparing its
+  fingerprint), so its fingerprint never changes for the life of the box.
+* The **issuer** (kept on the box, `box-issuer*.pem`) signs the **server certificate** for the PC's names and
+  current private LAN addresses. The server certificate is reissued automatically when the PC's address
+  changes (DHCP) or 30 days before it expires (825 days); the tills keep working because they trust the root.
+* Root and issuer are **name-constrained** to the PC's names and the private ranges 10/8, 172.16/12,
+  192.168/16, 127/8. A stolen box yields only the issuer key. Verified: OpenSSL rejects a public-site
+  certificate forged with the issuer key (`test_branch_box_cert.py`). Windows was **not** verified here:
+  without the root installed, Windows reports only "untrusted root" and shows no name-constraint result,
+  and installing a root needs Administrator. Check it at the pilot (below).
+* Tills use the **PC name** (`setup-till.ps1` asks the box for it); reserve the back-office PC's address on the
+  router anyway. `check-till.ps1` connects exactly as the till does (Windows trust + name) and needs no
+  Administrator: run it after setup, after a reboot and after an address change.
+
+## Uninstall safety
+`MotionBranchBox.exe --outbox-status` reads the saved events read-only (box running or stopped) and exits
+0 (everything accepted by head office), 3 (pending upload or awaiting review) or 2 (unreadable).
+`uninstall-box.ps1` runs it first: it removes nothing while anything is pending or awaiting review (unless
+`-Force`, which removes only the program), keeps the data whenever the check cannot run, deletes the data with
+`-RemoveData` only when everything was accepted, and drops unsent sales only with an explicit `-ForceRemoveData`.
+`test_uninstall_script.py` runs the real script and exe against disposable folders for all of these cases.
+
 ## Install (per branch)
 
 Build once: `powershell -ExecutionPolicy Bypass -File branch-edge\windows\build.ps1` →
@@ -67,6 +91,11 @@ till screen in `web\`, and the scripts). Plain-language steps are in `branch-edg
 
 ## Test it
 
+* `api/tests/test_branch_box_cert.py`: trust root stable across address changes, reissued server certificate,
+  real TLS handshakes by name and address, forged public-site certificates refused, root key never stored,
+  `--outbox-status` for empty / accepted / pending / awaiting review / unreadable.
+* `api/tests/test_uninstall_script.py` (Windows with the built exe): the real uninstaller against disposable
+  folders.
 * `api/tests/test_branch_box.py`: the till API over HTTPS with head office unplugged: shift, three sales
   (weighed + in-person discount approval, card + mobile money), refund approved in person, blind close;
   reconnect; head office has the shift (expected cash, variance), all four transactions on it, the refund's
@@ -78,7 +107,23 @@ till screen in `web\`, and the scripts). Plain-language steps are in `branch-edg
   switchable "internet line"), and runs `web/e2e/branch-box.spec.ts`: sell online → cut the line → sell
   (weighed item with manager-approved discount, another sale) and refund with the manager present → reconnect
   → everything uploads → close the shift → head office shows the sale on the box's shift. Passed with both
-  `python -m motion_edge` and the packaged exe (16 Nov 2026).
+  `python -m motion_edge` and the packaged exe (16 Nov 2026). The browser part skips certificate checks, so the
+  drill separately verifies TLS without bypass (trusting only the box root, by PC name and by address).
+
+## Pilot checklist (one branch)
+1. Install the box (`install-box.ps1`) and two tills (`setup-till.ps1`), with the real accounts. Reserve the box
+   PC's address on the router. Confirm: startup after reboot, Windows Firewall profile of the shop network is
+   Private, the fingerprint matches, the "Motion Till" shortcut opens, receipts print silently on USB.
+2. `check-till.ps1 -Box <PC name>` on each till: after setup, after rebooting the box, and after changing the box
+   PC's address (DHCP release/renew or a different reservation). All must print OK.
+3. Windows name constraints: on the box (Administrator) `python forge_test_cert.py C:\ProgramData\MotionBranchBox
+   forged.pem`; on a till `verify-cert-windows.ps1 -Installed -Chain forged.pem` must print **INVALID** and
+   `-Installed -Chain box-server-chain.pem` must print **OK**. If the forged one is OK, stop and escalate.
+4. Two tills in the same WAN outage: weighed sale with manager override, a refund, reconnect while events are
+   queued. Reconcile each receipt and shift at head office against the local outbox (once in stock, cash, ledger).
+5. Power-cycle the box on the UPS during queued events: they survive and resume uploading.
+6. Show a manager and head office how a rejected event is identified and resolved without editing the original;
+   agree who owns cash from sales that upload after the shift closed.
 
 ## Not done yet / to verify on site
 

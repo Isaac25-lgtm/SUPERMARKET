@@ -37,7 +37,7 @@ Invoke-Native "$venv\Scripts\pyinstaller.exe" @(
 $out = "$here\dist\MotionBranchBox"
 if (Test-Path "$out\web") { Remove-Item -Recurse -Force "$out\web" }
 Copy-Item -Recurse "$root\web\dist" "$out\web"
-Copy-Item "$here\install-box.ps1", "$here\setup-till.ps1", "$here\uninstall-box.ps1", "$here\README.txt" $out
+Copy-Item "$here\install-box.ps1", "$here\setup-till.ps1", "$here\uninstall-box.ps1", "$here\README.txt", "$root\branch-edge\tools\check-till.ps1" $out
 $zip = "$here\dist\MotionBranchBox-$version.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path "$out\*" -DestinationPath $zip

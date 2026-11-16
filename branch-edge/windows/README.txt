@@ -8,8 +8,11 @@ What it is
   the internet returns. Nothing is installed on the checkout computers except a shortcut.
 
 Before you start
+  - Give the back-office PC a fixed address on the shop router (a "DHCP reservation") and keep its
+    PC name. The tills find the box by name; if the address still changes, the box renews its own
+    certificate automatically and the tills keep working.
   - Head office: in Motion, sign in as the technical administrator, open System, and under
-    "Branch devices" register a device for this branch. Copy the token (starts with edge_).
+    "Branch boxes" click "Register branch box" for this branch. Copy the token (starts with edge_).
     It is shown only once.
   - The back-office PC stays on during trading hours (Settings > Power: Sleep = Never),
     ideally on a UPS. All PCs must be on the same shop router / network.
@@ -30,6 +33,10 @@ Before you start
   - Open the till, sign in as the cashier, choose this till in "Register" and open the shift.
     The till is remembered on this computer.
 
+Check a till (any time, no Administrator needed)
+  - powershell -ExecutionPolicy Bypass -File .\check-till.ps1 -Box <back-office PC name>
+    Run it after setup, after the back-office PC restarts, and if its address changed.
+
 Every day
   - Cashiers use "Motion Till" as normal. The pill at the top shows:
       Online                  sales go to head office straight away
@@ -43,7 +50,9 @@ Updating
   - Run install-box.ps1 from the new version's folder. Saved sales are kept.
 
 Removing
-  - uninstall-box.ps1 (refuses while sales are still waiting to upload).
+  - uninstall-box.ps1 checks the saved sales first, even if the box is stopped. It refuses while
+    anything is waiting to upload or needs review. -RemoveData deletes the data only when head
+    office has accepted everything; if the check cannot run, the data is always kept.
 
 Files
   Program:  C:\Program Files\MotionBranchBox
