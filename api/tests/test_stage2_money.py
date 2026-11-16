@@ -3,7 +3,8 @@ shift-close serialization and blind counts (H10)."""
 from __future__ import annotations
 
 import threading
-from decimal import ROUND_HALF_EVEN, Decimal as D
+from decimal import ROUND_HALF_EVEN
+from decimal import Decimal as D
 
 from conftest import account_balance, new_key, pid, q, q1
 from motion_api import tryton as t

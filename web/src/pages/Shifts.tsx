@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, Timer } from 'lucide-react'
+import { Timer } from 'lucide-react'
 import { useState } from 'react'
 import { api } from '../api/client'
 import { useAuth } from '../auth/auth'
+import { CsvButton } from '../components/CsvButton'
 import { Button, Card, Empty, ErrorBox, Field, Input, LoadingBlock, Modal, PageHeader, Select, StatusChip, Table, Td, Textarea, Th, useToast } from '../components/ui'
 import { dateTime, money, num } from '../lib/format'
 
@@ -19,7 +20,7 @@ export default function ShiftsPage() {
   return (
     <div>
       <PageHeader title="Shifts & cash reconciliation" subtitle="Expected cash = opening float + cash sales − cash refunds ± transfers. Variances are booked to Cash over/short."
-        actions={<>{can('reports.export') && <a href={api.url('/api/reports/shifts.csv', { branch_id: branchId })}><Button icon={<Download className="size-4" />}>Export</Button></a>}</>} />
+        actions={<>{can('reports.export') && <CsvButton path="/api/reports/shifts.csv" filename="shifts.csv" query={{ branch_id: branchId }}>Export</CsvButton>}</>} />
       <Card>
         <div className="border-b border-line p-3"><Select aria-label="Status" className="w-auto" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All</option><option value="open">Open</option><option value="closed">Closed (to reconcile)</option><option value="reconciled">Reconciled</option></Select></div>
         {q.isLoading ? <LoadingBlock /> : q.data?.shifts.length ? (

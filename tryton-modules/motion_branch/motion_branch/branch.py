@@ -1,6 +1,5 @@
 # Licensed GPL-3.0-or-later — part of the Motion Imprints Tryton extensions.
-from trytond.model import (
-    DeactivableMixin, ModelSingleton, ModelSQL, ModelView, Unique, fields)
+from trytond.model import DeactivableMixin, ModelSingleton, ModelSQL, ModelView, Unique, fields
 from trytond.pool import Pool, PoolMeta
 from trytond.pyson import Eval
 from trytond.transaction import Transaction

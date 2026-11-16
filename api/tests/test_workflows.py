@@ -17,8 +17,8 @@ def _approve(login, req_id, *users):
 def test_transfer_100_dispatched_95_received(login, ids):
     water = pid(ids, "Drinking water 500ml")
     cen, nth = ids["storage"]["CEN"], ids["storage"]["NTH"]
-    from motion_api.services import common
     from motion_api import tryton as t
+    from motion_api.services import common
     transit = t.run(common.transit_location_id, readonly=True)
     c0, n0, t0 = on_hand(cen, water), on_hand(nth, water), on_hand(transit, water)
     revenue0 = account_balance("4.1.1.01")
@@ -31,6 +31,8 @@ def test_transfer_100_dispatched_95_received(login, ids):
     assert sarah.post(f"/api/transfers/{tr['id']}/dispatch").status_code == 403  # receiving branch cannot dispatch
     assert joseph.post(f"/api/transfers/{tr['id']}/dispatch").status_code == 200
     assert on_hand(cen, water) == c0 - 100 and on_hand(transit, water) == t0 + 100
+    assert sarah.post(f"/api/transfers/{tr['id']}/receive", {"lines": []}).status_code == 422
+    assert on_hand(nth, water) == n0
     r = sarah.post(f"/api/transfers/{tr['id']}/receive", {"lines": [{"product_id": water, "received_qty": 95}], "note": "5 missing"})
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "received_with_discrepancy"
@@ -113,6 +115,11 @@ def test_full_procurement_to_payment(login, ids):
     assert D(po["lines"][0]["pending"]) == 10
     assert q1("SELECT fulfilment_status FROM motion.approval_request WHERE id=%s", (req["id"],))["fulfilment_status"] == "partially_received"
     invoice_id = po["invoices"][0]["id"]
+    later = inv.post(f"/api/procurement/orders/{po['id']}/receive",
+                     {"lines": [{"line_id": line["id"], "received_qty": 10}], "note": "Balance delivered"})
+    assert later.status_code == 200, later.text
+    assert on_hand(ids["storage"]["STH"], sugar) == stock0 + 40
+    assert len(later.json()["invoices"]) == 2
     detail = acc.get(f"/api/finance/invoices/{invoice_id}").json()
     assert detail["three_way_match"] is True and D(detail["lines"][0]["quantity"]) == 30
     payable0 = account_balance("2.1.1.01")

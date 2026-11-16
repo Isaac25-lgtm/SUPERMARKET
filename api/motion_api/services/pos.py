@@ -20,7 +20,7 @@ from typing import Any
 from .. import tryton as t
 from ..audit import record
 from ..errors import Conflict, Forbidden, Invalid, NotFound
-from ..security import Principal, load_principal, utcnow, verify_password
+from ..security import Principal, load_principal, utcnow, verify_credentials
 from ..settings import get_settings
 from . import approvals, catalog, common, idempotency
 
@@ -118,6 +118,7 @@ def open_shift(actor: Principal, *, register_id: int, opening_float: Decimal, on
         start = common.money(session.start_amount + session.balance)
         diff = opening_float - start
         if diff:
+            common.lock_safe(reg["branch_id"])
             Transfer.create([{"point": point.id, "session": session.id, "amount": diff, "date": on_date or common.today(),
                               "type": _transfer_type("topup" if diff > 0 else "drop")}])
     row = t.sql_one("""INSERT INTO motion.shift (branch_id, register_id, cashier_id, tryton_session_id, status,
@@ -145,6 +146,8 @@ def close_shift(actor: Principal, shift_id: int, *, counted_cash: Decimal, cash_
     drop = common.money(cash_drop)
     if counted < 0 or drop < 0 or drop > counted:
         raise Invalid("Counted cash and cash drop must be positive and the drop cannot exceed the count.")
+    if drop:
+        common.lock_safe(shift["branch_id"])
     Session = t.model("sale.point.cash.session")
     Transfer = t.model("sale.point.cash.transfer")
     with t.set_context(**common.tryton_context(shift["branch_id"])):
@@ -245,13 +248,6 @@ def price_version() -> str:
 
 # ------------------------------------------------------------------ core posting
 
-def _lock_guards(location_id: int, product_ids: list[int]) -> None:
-    for pid in sorted(set(product_ids)):
-        t.execute("""INSERT INTO motion.stock_guard (location_id, product_id, version) VALUES (%s,%s,1)
-                     ON CONFLICT (location_id, product_id) DO UPDATE SET version = motion.stock_guard.version + 1""",
-                  (location_id, pid))
-
-
 def _line_amount(q: Decimal, unit_gross: Decimal) -> Decimal:
     return common.line_amount(q, unit_gross)
 
@@ -270,28 +266,10 @@ def _hold_shift(actor: Principal, register_id: int, *, purpose: str) -> dict:
     return shift
 
 
-_DEFERRED: list[int] = []
-
-
-def post_deferred() -> int:
-    """Bulk-post sales created with defer_post=True (TEST DATA seeding)."""
-    if not _DEFERRED:
-        return 0
-    Sale = t.model("sale.point.sale")
-    sales = Sale.browse(list(_DEFERRED))
-    with t.set_context(**common.tryton_context()):
-        for branch_id in {s.point.branch.id for s in sales}:
-            with t.set_context(motion_branch=branch_id):
-                Sale.post([s for s in sales if s.point.branch.id == branch_id])
-    n = len(_DEFERRED)
-    _DEFERRED.clear()
-    return n
-
-
 def post_sale(*, register: dict, cashier: dict, lines: list[dict], payments: list[dict], sale_date,
               idempotency_key: str, source: str, shift_id: int | None, enforce_stock: bool,
               kind: str = "sale", refund_of: int | None = None, approval_id: int | None = None,
-              edge_device_id: int | None = None, local_created_at=None, defer_post: bool = False,
+              edge_device_id: int | None = None, local_created_at=None,
               cash_session_id: int | None = None) -> dict:
     """Create, process and post a Tryton POS sale.
 
@@ -307,7 +285,7 @@ def post_sale(*, register: dict, cashier: dict, lines: list[dict], payments: lis
     branch_id = register["branch_id"]
     location = register["storage_location_id"]
     product_ids = [line["product_id"] for line in lines]
-    _lock_guards(location, product_ids)
+    common.lock_stock(location, product_ids)
     conflicts = []
     if kind == "sale":
         need: dict[int, Decimal] = {}
@@ -349,7 +327,7 @@ def post_sale(*, register: dict, cashier: dict, lines: list[dict], payments: lis
                     employee=cashier.get("tryton_employee_id"), lines=tlines)
         sale.save()
         stored = []
-        for line, tline in zip(lines, sale.lines):
+        for line, tline in zip(lines, sale.lines, strict=True):
             gross, tax = common.money(tline.gross_amount), common.money(tline.tax_amount)
             expected = line.get("amount", _line_amount(line["quantity"], Decimal(line["unit_gross"])))
             if gross != expected:  # one canonical calculator: API, till and Tryton must agree
@@ -370,11 +348,8 @@ def post_sale(*, register: dict, cashier: dict, lines: list[dict], payments: lis
         Sale.process([sale])
         if sale.state != "done":
             raise Conflict("Sale could not be completed (amount still to pay).")
-        if defer_post:  # seeding only: caller bulk-posts the batch with post_deferred()
-            _DEFERRED.append(sale.id)
-        else:
-            Sale.post([sale])
-            common.expect_state(sale, "posted", what="POS sale posting")
+        Sale.post([sale])
+        common.expect_state(sale, "posted", what="POS sale posting")
         number, total_tax = sale.number, common.money(sale.total_tax)
     discount_total = sum((_line_amount(abs(ln["quantity"]), Decimal(ln["list_gross"])) - _line_amount(abs(ln["quantity"]), Decimal(ln["unit_gross"]))
                           for ln in lines if "amount" not in ln), Decimal(0))
@@ -389,7 +364,7 @@ def post_sale(*, register: dict, cashier: dict, lines: list[dict], payments: lis
          json.dumps([{**p, "amount": str(p["amount"]),
                       "verification": "n/a" if p["method"] == "cash" else "pending"} for p in payments]),
          unverified))
-    for line, st in zip(lines, stored):
+    for line, st in zip(lines, stored, strict=True):
         t.execute("""INSERT INTO motion.pos_sale_line (pos_sale_id, tryton_line_id, product_id, quantity, unit_price,
                      list_unit_price, discount_pct, refund_of_line, line_gross, line_tax, tax_ids)
                      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
@@ -429,7 +404,15 @@ def _price_lines(raw_lines: list[dict], items: dict[int, dict]) -> list[dict]:
     return lines
 
 
-def _check_override(actor: Principal, register: dict, lines: list[dict], approval_id: int | None) -> int | None:
+def _override_basket(lines: list[dict]) -> str:
+    return idempotency.fingerprint({"lines": [
+        {key: line[key] for key in ("product_id", "quantity", "list_gross", "unit_gross", "discount_pct")}
+        for line in lines
+    ]})
+
+
+def _check_override(actor: Principal, register: dict, shift_id: int,
+                    lines: list[dict], approval_id: int | None) -> int | None:
     limit = Decimal(str(pos_policy().get("cashier_max_discount_pct", 0)))
     over = [ln for ln in lines if ln["discount_pct"] > limit]
     if not over:
@@ -444,12 +427,11 @@ def _check_override(actor: Principal, register: dict, lines: list[dict], approva
     if req["updated_at"] < utcnow() - timedelta(minutes=30):
         raise Forbidden("This override has expired; ask the manager again.", action="pos.override.expired",
                         target_type="approval", target_id=req["ref"])
-    allowed = {(int(x["product_id"]), Decimal(str(x["discount_pct"]))) for x in req["payload"]["lines"]}
-    if req["payload"].get("register_id") != register["id"] or req["payload"].get("cashier_id") != actor.user_id:
-        raise Forbidden("Override was granted for a different till or cashier.", action="pos.override.mismatch")
-    for ln in over:
-        if (ln["product_id"], ln["discount_pct"]) not in allowed:
-            raise Forbidden("Discount differs from what the manager approved.", action="pos.override.mismatch")
+    payload = req["payload"]
+    if (payload.get("register_id") != register["id"] or payload.get("cashier_id") != actor.user_id
+            or payload.get("shift_id") != shift_id or payload.get("basket") != _override_basket(lines)):
+        raise Forbidden("The shift or basket changed. Ask the manager to approve the current sale.",
+                        action="pos.override.mismatch")
     return approval_id
 
 
@@ -465,7 +447,7 @@ def _sale_fingerprint(register_id, lines, payments, override_approval_id) -> dic
 
 
 def checkout(actor: Principal, *, register_id: int, idempotency_key: str, lines: list[dict], payments: list[dict],
-             override_approval_id: int | None = None, _sale_date=None, _defer_post: bool = False) -> dict:
+             override_approval_id: int | None = None, _sale_date=None) -> dict:
     actor.require("pos.sell", action="pos.sale")
     request = _sale_fingerprint(register_id, lines, payments, override_approval_id)
     # H2: resolve the key before touching stock guards, approvals or the shift.
@@ -479,7 +461,7 @@ def checkout(actor: Principal, *, register_id: int, idempotency_key: str, lines:
         raise Invalid("The basket is empty.")
     items = {i["id"]: i for i in catalog._rows(ids=[int(x["product_id"]) for x in lines])}
     priced = _price_lines(lines, items)
-    override_id = _check_override(actor, reg, priced, override_approval_id)
+    override_id = _check_override(actor, reg, shift["id"], priced, override_approval_id)
     total = sum((_line_amount(ln["quantity"], ln["unit_gross"]) for ln in priced), Decimal(0))
     # Tender allocation: non-cash first (exact amounts), cash covers the rest; change from cash only.
     noncash = []
@@ -510,7 +492,7 @@ def checkout(actor: Principal, *, register_id: int, idempotency_key: str, lines:
     result = post_sale(register=reg, cashier=cashier, lines=priced, payments=tryton_payments, sale_date=_sale_date or common.today(),
                        idempotency_key=idempotency.internal_key("pos.sale", actor, idempotency_key), source="online",
                        shift_id=shift["id"], enforce_stock=not pos_policy().get("allow_negative_stock", False),
-                       approval_id=override_id, defer_post=_defer_post, cash_session_id=shift["tryton_session_id"])
+                       approval_id=override_id, cash_session_id=shift["tryton_session_id"])
     idempotency.complete("pos.sale", actor, idempotency_key, request, result_type="pos_sale", result_id=result["id"])
     if override_id:
         approvals.mark_executed(override_id, actor=actor, result_type="pos_sale", result_id=result["id"])
@@ -526,18 +508,21 @@ def request_override(actor: Principal, *, register_id: int, lines: list[dict], m
     actor.require("pos.sell", action="pos.override.request")
     reg = common.register(register_id)
     actor.require_branch(reg["branch_id"], action="pos.override.request")
-    row = t.sql_one("SELECT * FROM motion.app_user WHERE lower(username)=%s", ((manager_username or "").strip().lower(),))
-    if not row or row["status"] != "active" or not verify_password(row["password_hash"], manager_password or ""):
-        raise Forbidden("Manager credentials not accepted.", action="pos.override.bad_credentials", branch_id=reg["branch_id"])
+    row = verify_credentials(manager_username, manager_password, actor.meta, action="pos.override.bad_credentials")
     manager = load_principal(row["id"], meta=actor.meta)
     if manager.user_id == actor.user_id:
         raise Forbidden("You cannot approve your own override.", action="pos.override.self")
     manager.require("pos.override.approve", action="pos.override.approve")
     manager.require_branch(reg["branch_id"], action="pos.override.approve")
+    if manager.must_change_password:
+        raise Forbidden("The manager must change their temporary password first.", action="pos.override.password_change")
+    shift = _hold_shift(actor, register_id, purpose="before requesting an override")
     items = {i["id"]: i for i in catalog._rows(ids=[int(x["product_id"]) for x in lines])}
     priced = _price_lines(lines, items)
-    amount = sum((_line_amount(ln["quantity"], ln["list_gross"] - ln["unit_gross"]) for ln in priced), Decimal(0))
-    payload = {"register_id": reg["id"], "cashier_id": actor.user_id,
+    amount = sum((_line_amount(ln["quantity"], ln["list_gross"]) - _line_amount(ln["quantity"], ln["unit_gross"])
+                  for ln in priced), Decimal(0))
+    payload = {"register_id": reg["id"], "cashier_id": actor.user_id, "shift_id": shift["id"],
+               "basket": _override_basket(priced),
                "lines": [{"product_id": ln["product_id"], "discount_pct": str(ln["discount_pct"]), "name": ln["name"]} for ln in priced]}
     req = approvals.submit(actor, action_type="price_override", branch_id=reg["branch_id"], amount=amount,
                            title=f"Till discount on {reg['name']}", payload=payload, justification=reason)

@@ -1,0 +1,40 @@
+# Motion Retail production follow-up
+
+16 November 2026 · Workspace changes based on `main` at `a22e139`. The preceding audit and its finding IDs are in [CLAUDE_PRODUCTION_HANDOFF.md](CLAUDE_PRODUCTION_HANDOFF.md). Use this file for the current status and remaining work.
+
+## Changes implemented
+
+| Area | Implementation |
+| --- | --- |
+| Money retries and cash custody | Reserve sale, refund, and deposit keys in PostgreSQL before business writes. Complete the reservation in the posting transaction. Serialise safe movements by branch. A dated bank deposit checks the safe balance on the deposit date and on later posted dates. Reject future deposits and duplicate slips. |
+| Stock control | Require explicit counts for every dispatched product, including zeros. Validate duplicate and invalid lines, share the inventory guard with POS, and serialise resolution of sibling discrepancies on their parent transfer. Check the resulting Tryton move state. |
+| Procurement and payables | Use the approved supplier ID. Match each invoice to completed fulfillment moves and available unbilled quantities, even when later deliveries arrived before the first bill was posted. Prevent duplicate supplier invoice references and calculate open payables using Tryton's outstanding amount, including partial payments. |
+| Authentication and overrides | Use central credential checks and lockout for till step-up. Bind the approval to the exact priced cart, shift, cashier and register. Read proxy-derived client identity through the server's configured trust. Refresh session activity separately from business transactions. |
+| Offline reliability | Validate events and bind replay to the original device and payload. Persist rejections and distinguish a retryable failure from a terminal rejection. Bound batch retries. Keep sold units reserved until the refreshed snapshot includes their posted receipts. Keep rejected receipts visible for reconciliation. |
+| Edge till | Require HTTPS outside loopback, rate-limit offline sign-in, invalidate local sessions when grants or verifiers change, and scope receipt history and manual sync to authorized operators. Move the till JavaScript out of the HTML, render dynamic content with DOM text APIs, and match the server's weighted-line rounding. |
+| Reports and dashboards | Apply branch scope before row limits and to accountant dashboard drafts and unverified tenders. Respect cash and P&L branch selection. Use the configured fiscal period and the original offline event timestamp in hourly reports. Include completed zero-flow weeks in capital recovery and stop forecasting once the investment is recovered. |
+| CSV exports | Preserve the routes and filters through CSRF-protected POST requests. Escape formula-like text while preserving numeric cells. The React client downloads the CSV and displays errors. |
+| Deployment and code cleanup | Add a readiness endpoint and startup schema compatibility checks. Serialize bootstrap across processes and keep it separate from client service startup by default. Leave dynamic Tryton record locks transaction-local. Restore Tryton warnings and acknowledge only the exact audited transfer quantity warning. Remove process-global seed posting state. Repair inactive-product price read-back and imported product policy creation. Add isolated PostgreSQL and browser CI. |
+
+## Deploy and verify on staging
+
+1. Work from the full workspace diff. Review the migration and rollout changes before pushing to a branch that auto-deploys.
+2. Rotate the previously exposed Neon password and Render API key through their consoles. Update Render's database secret and verify the old credentials were revoked. Keep the public synthetic demo on its own service and database. Disable all three demo/seed switches on the client deployment.
+3. Take and restore a representative backup into staging. Apply the release migrations with the migration identity, including `0007_workflow_integrity.sql`. Verify existing weighted refunds, open approvals, historical receipts, and audit records survive. Point the service at a restricted runtime identity and verify startup and `/readyz`. Keep production traffic off the service until that check passes. Set `FORWARDED_ALLOW_IPS` to verified ingress addresses.
+4. Deploy the central upgrade before the new edge clients. Back up each edge SQLite database and its pending outbox. Test TLS, file ACLs, local stock after push succeeds and pull fails, and project how rejected and older pending receipts will be reconciled. Cashiers need a new approval if an outstanding override predates exact basket binding. API integrations must use POST for audited CSV downloads and explicitly count all dispatched transfer lines.
+5. Run the hosted CI workflow and build the release image. Add dependency, image and redacted secret scanning to the release checks. On staging, run 10 users including four active cashiers, capture latency, retries, memory and database connections, and reconcile each run to the ledger and receipt history. Rehearse a restore and rollback or forward correction.
+
+## Remaining engineering and operational work
+
+- **Offline cash and exception closure.** Finance must define who takes custody of cash from late offline receipts and which shift or clearing account it reaches. Central sync still ingests offline cash without a platform shift. Give authorized finance staff a reconciliation workflow for terminal rejects that retains the original receipt and records corrective entries. Prove restore and WAN recovery, including a closed-period case and power loss.
+- **Offline enrollment.** Edge stations still receive password verifiers. Design a separate device-bound offline credential, retain time-limited authorization, and rehearse verifier removal, device revocation and branch re-enrollment. Host ACLs and TLS need verification on the actual branch equipment.
+- **Identity and production policy.** Configure privileged MFA or SSO, agree who can administer company-wide records, and validate the actual client role assignments. Finance must sign off the chart and opening balances, refund-to-tender policy, taxes, EFRIS requirements, bank and payment reconciliation, and period close. Connect any external AI provider only after its client data-sharing policy and controls are approved.
+- **Additional retry and reconciliation UX.** Existing explicit retry keys cover sale, refund and bank deposits. Supplier payment and expense endpoints rely on approval state and consumption. Serialize pending payment requests and execution per invoice, and add clear receipt recovery for an ambiguous response across those workflows and for a cashier who reloads the edge till after disconnecting during checkout. Exercise simultaneous reconcilers with production-like data.
+- **Further code cleanup.** Split shift, checkout and refund handlers from `services/pos.py` using the current tested transaction contracts. Split purchase receipt from invoice/payment handling and separate the combined operations router without changing URLs. Continue typing API responses and reducing broad frontend casts in the affected screens. Use real query plans and load measurements before adding caches or indexes.
+
+## Verification
+
+- **108 backend tests passed** using disposable loopback PostgreSQL 18 and real Tryton. The suite reported one Starlette TestClient deprecation warning.
+- **12 Playwright tests passed** on a separate local database. This included opening a cashier shift, completing a sale and displaying the receipt, and downloading a CSV as an accountant.
+- The synthetic seed smoke check closed a register-day and posted five sales. On a disposable prior-schema database containing posted sales, migration 0007 preserved receipt, operation, and audit counts. A second migration run had nothing to apply.
+- Ruff, Python compilation, edge JavaScript syntax, frontend typecheck, and the production web build passed. Frontend lint still reports React warnings. The GitHub Actions workflow, cloud deployment, physical hardware, and client data have separate release checks.

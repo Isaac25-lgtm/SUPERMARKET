@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import { ROLE_LABELS, primaryRole, useAuth } from '../auth/auth'
 import { useIdleLogout } from '../auth/useIdleLogout'
 import { AskMotionFloater } from '../components/MotionChat'
+import { MyAccessDialog } from '../components/MyAccess'
 import { TestDataBadge } from '../components/ui'
 
 interface NavItem { to: string; label: string; icon: ReactNode; show: (can: (p: string) => boolean) => boolean; badge?: number }
@@ -41,6 +42,7 @@ export function AppShell() {
     refetchInterval: 60_000,
   })
   useEffect(() => setMobileOpen(false), [location.pathname])
+  const [accessOpen, setAccessOpen] = useState(false)
   const onIdle = useCallback(() => { void logout('idle') }, [logout])
   useIdleLogout(meta?.session_idle_minutes ?? 5, onIdle)
   if (!me) return null
@@ -150,6 +152,7 @@ export function AppShell() {
               <Menu.Content align="end" sideOffset={6} className="z-50 min-w-[220px] rounded-xl border border-line bg-surface p-1.5 shadow-[var(--shadow-pop)]">
                 <div className="px-2.5 py-2 text-[12px] text-muted">Signed in as <b className="text-ink">{me.username}</b><br />{me.roles.map((r) => ROLE_LABELS[r]).join(', ')}</div>
                 <Menu.Separator className="my-1 h-px bg-line" />
+                <Menu.Item onSelect={() => setAccessOpen(true)} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><ShieldCheck className="size-4" />My access</Menu.Item>
                 {!meta?.open_demo && <Menu.Item onSelect={() => navigate('/account/password')} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><KeyRound className="size-4" />Change password</Menu.Item>}
                 {meta?.open_demo && <Menu.Item onSelect={() => { void logout() }} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-none data-[highlighted]:bg-surface-2"><Users className="size-4" />Switch demo account</Menu.Item>}
                 <Menu.Item onSelect={() => { void logout() }} className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] text-bad outline-none data-[highlighted]:bg-bad-soft"><LogOut className="size-4" />Sign out</Menu.Item>
@@ -161,6 +164,7 @@ export function AppShell() {
           <div className="mx-auto w-full max-w-[1440px] px-4 pb-24 pt-6 sm:px-6 lg:px-8"><Outlet /></div>
         </main>
         <AskMotionFloater />
+        <MyAccessDialog open={accessOpen} onOpenChange={setAccessOpen} />
       </div>
     </div>
   )

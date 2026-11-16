@@ -4,7 +4,8 @@ from __future__ import annotations
 import threading
 from decimal import ROUND_HALF_UP, Decimal
 
-from conftest import Api, account_balance, ids as _ids, new_key, on_hand, pid, q, q1  # noqa: F401
+from conftest import Api, account_balance, new_key, on_hand, pid, q, q1  # noqa: F401
+from conftest import ids as _ids
 
 D = Decimal
 

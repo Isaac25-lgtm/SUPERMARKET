@@ -1,0 +1,84 @@
+name: Verify supermarket workflows
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: motion
+          POSTGRES_PASSWORD: disposable-ci-only
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U motion -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      MOTION_TEST_DATABASE_URL: postgresql://motion:disposable-ci-only@127.0.0.1:55432/motion_test
+      PYTHONPATH: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+          npm install --global npm@11.19.1
+          npm ci --prefix web
+      - name: Python checks and integration suite
+        run: |
+          seed=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+          echo "::add-mask::$seed"
+          echo "MOTION_SEED_PASSWORD_SECRET=$seed" >> "$GITHUB_ENV"
+          export MOTION_SEED_PASSWORD_SECRET="$seed"
+          ruff check api branch-edge tryton-modules
+          python -m pytest -q
+      - name: Build and verify the web app
+        run: |
+          npm run typecheck --prefix web
+          npm run build --prefix web
+          node --check branch-edge/motion_edge/till.js
+          cd web
+          npx playwright install --with-deps chromium
+      - name: Browser scenarios on a separate local database
+        shell: bash
+        run: |
+          export DATABASE_URL="${MOTION_TEST_DATABASE_URL%/*}/motion_e2e"
+          export MOTION_ENV=test
+          export E2E_BASE_URL=http://127.0.0.1:8119
+          export E2E_CREDS="$RUNNER_TEMP/motion-fixtures.json"
+          export E2E_SHOTS="$RUNNER_TEMP/motion-screenshots"
+          python - <<'PY'
+          import json
+          import os
+          import psycopg
+          from motion_api.creds import DEMO_USERS, demo_password
+
+          admin = os.environ["MOTION_TEST_DATABASE_URL"].rsplit("/", 1)[0] + "/postgres"
+          with psycopg.connect(admin, autocommit=True) as connection:
+              connection.execute("CREATE DATABASE motion_e2e TEMPLATE motion_test_tpl")
+          with open(os.environ["E2E_CREDS"], "x") as target:
+              json.dump({username: demo_password(username) for username, *_ in DEMO_USERS}, target)
+          PY
+          python -m uvicorn motion_api.main:app --host 127.0.0.1 --port 8119 > "$RUNNER_TEMP/motion-api.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true; rm -f "$E2E_CREDS"' EXIT
+          curl --fail --silent --retry 30 --retry-all-errors --retry-delay 1 "$E2E_BASE_URL/readyz"
+          npm run e2e --prefix web -- --config e2e/playwright.config.ts

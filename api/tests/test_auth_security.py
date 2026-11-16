@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import psycopg
 import pytest
-from fastapi.testclient import TestClient
-
 from conftest import TEST_URL, Api, app, q, q1
+from fastapi.testclient import TestClient
 from motion_api.creds import demo_password
 
 

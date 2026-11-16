@@ -36,4 +36,4 @@ EXPOSE 10000
 # Port binds immediately; database bootstrap (migrations, Tryton module activation,
 # base setup, optional TEST DATA) runs in a background thread when MOTION_AUTO_BOOTSTRAP=1.
 # One worker: Tryton keeps per-process caches and the gateway learns lock needs per process.
-CMD ["sh", "-c", "uvicorn motion_api.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --proxy-headers --forwarded-allow-ips='*'"]
+CMD ["sh", "-c", "exec uvicorn motion_api.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --proxy-headers"]

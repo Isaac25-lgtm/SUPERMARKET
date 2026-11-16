@@ -4,9 +4,8 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-from fastapi.testclient import TestClient
-
 from conftest import app, q1
+from fastapi.testclient import TestClient
 from motion_api import security
 from motion_api.routes import core
 from motion_api.settings import get_settings

@@ -20,7 +20,6 @@ import uuid
 from decimal import Decimal
 
 from . import tryton as t
-from .errors import AppError
 from .seed import HISTORY_DAYS, PRODUCTS, _mark, _phase_done, principal
 from .services import catalog, common, pos
 
@@ -61,16 +60,21 @@ def _payments(rng: random.Random, total: Decimal) -> list[dict]:
 
 
 def _sell(cashier, register, basket, rng, day) -> dict | None:
-    items = {i["id"]: i for i in catalog._rows(ids=[b["product_id"] for b in basket])}
-    total = sum((common.money(b["quantity"] * common.money(items[b["product_id"]]["shelf_price"]
-                                                           * (100 - b["discount_pct"]) / 100))
-                 for b in basket), D(0))
-    try:
-        return pos.checkout(cashier, register_id=register["id"], idempotency_key=f"seed-{uuid.uuid4()}",
-                            lines=basket, payments=_payments(rng, total), _sale_date=day, _defer_post=True)
-    except AppError as exc:
-        logger.debug("seed sale skipped: %s", exc.message)
+    location = register["storage_location_id"]
+    needed: dict[int, Decimal] = {}
+    for line in basket:
+        product_id = line["product_id"]
+        needed[product_id] = needed.get(product_id, D(0)) + common.qty(line["quantity"])
+    common.lock_stock(location, list(needed))
+    on_hand = common.stock_on_hand([location], list(needed))
+    if any(q > on_hand.get((location, pid), D(0)) for pid, q in needed.items()):
         return None
+    items = {i["id"]: i for i in catalog._rows(ids=[b["product_id"] for b in basket])}
+    total = sum((common.line_amount(common.qty(b["quantity"]), common.money(items[b["product_id"]]["shelf_price"]
+                                                                            * (100 - b["discount_pct"]) / 100))
+                 for b in basket), D(0))
+    return pos.checkout(cashier, register_id=register["id"], idempotency_key=f"seed-{uuid.uuid4()}",
+                        lines=basket, payments=_payments(rng, total), _sale_date=day)
 
 
 def _day(day: dt.date, offset: int, items, weights, rng: random.Random, *, keep_open: bool, only: int | None = None) -> None:
@@ -86,15 +90,14 @@ def _day(day: dt.date, offset: int, items, weights, rng: random.Random, *, keep_
         scale = {"CEN": 6, "NTH": 5, "STH": 4}[branch["code"]]
         for _ in range(rng.randint(scale - 2, scale + 1)):
             _sell(cashier, reg, _basket(rng, items, weights), rng, day)
-        pos.post_deferred()  # bulk-post this till's sales before counting the drawer
         opened = dt.datetime.combine(day, dt.time(8, rng.randint(0, 20)), tz)
         if keep_open:
             if reg["name"] == "CEN-T2":  # interrupted: left open since yesterday evening
                 opened = dt.datetime.now(tz) - dt.timedelta(hours=20)
             t.execute("UPDATE motion.shift SET opened_at=%s WHERE id=%s", (opened, shift["id"]))
             continue
-        live = pos.my_open_shift(cashier)
-        expected = live["expected_cash_now"]
+        session = t.model("sale.point.cash.session")(shift["tryton_session_id"])
+        expected = common.money(session.start_amount + session.balance)
         counted = expected
         note = None
         if offset == 3 and reg["name"] == "NTH-T1":
@@ -126,8 +129,7 @@ def pos_history() -> None:
             if t.run(lambda k=rkey: _phase_done(k), readonly=True):
                 continue
 
-            def work(day=day, rkey=rkey, offset=offset, reg=reg):
-                pos._DEFERRED.clear()  # a lock-escalation restart re-runs this unit
+            def work(day=day, rkey=rkey, offset=offset, reg=reg, day_seed=day_seed):
                 with t.set_context(**common.tryton_context()):
                     _day(day, offset, items, weights, random.Random(day_seed + reg["id"]), keep_open=(offset == 0),
                          only=reg["id"])

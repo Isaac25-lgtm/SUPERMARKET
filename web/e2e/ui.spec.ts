@@ -84,6 +84,14 @@ test('cashier cannot reach back-office pages', async ({ page }) => {
   await expect(page.getByText('Not available for your role')).toBeVisible()
 })
 
+test('an accountant downloads an audited CSV report', async ({ page }) => {
+  await login(page, 'acc.amina')
+  await page.goto('/reports')
+  const downloaded = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Branch & consolidated P&L' }).click()
+  expect((await downloaded).suggestedFilename()).toBe('pnl.csv')
+})
+
 test('logo returns to the dashboard and sign-out lands on the sign-in page', async ({ page }) => {
   await login(page, 'gm.grace')
   await page.goto('/stock')
@@ -118,5 +126,32 @@ test('Ask Motion AI floater answers on any page; alerts page renders', async ({ 
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Alerts & insights' }).click()
   await expect(page.getByRole('heading', { name: 'Alerts & insights' })).toBeVisible()
   await expect(page.getByLabel('Type')).toBeVisible()
+  expect(errors).toEqual([])
+})
+
+test('My access shows the account roles, branches and permissions and collapses', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await login(page, 'cash.cen1')
+  await page.goto('/pos')
+  await page.getByRole('button', { name: 'Account menu' }).click()
+  await page.getByRole('menuitem', { name: 'My access' }).click()
+  const panel = page.getByRole('dialog', { name: 'My access' })
+  await expect(panel).toBeVisible()
+  await expect(panel.getByText('Cashier', { exact: true })).toBeVisible()
+  await expect(panel.getByText(/6 of \d+ permissions/)).toBeVisible()
+  await expect(panel.getByText('Operate the POS: sell, take payment, print receipt')).toBeVisible()
+  await expect(panel.getByText('This account does not approve requests.')).toBeVisible()
+  // the permissions the role does not have stay collapsed until asked for
+  await expect(panel.getByText('View P&L, cash, payables, break-even, capital recovery')).toHaveCount(0)
+  await panel.getByRole('button', { name: /Not included in your roles/ }).click()
+  await expect(panel.getByText('View P&L, cash, payables, break-even, capital recovery')).toBeVisible()
+  await panel.getByRole('button', { name: 'Collapse all' }).click()
+  await expect(panel.getByText('Operate the POS: sell, take payment, print receipt')).toHaveCount(0)
+  await panel.getByRole('button', { name: 'Expand all' }).click()
+  await expect(panel.getByText('Operate the POS: sell, take payment, print receipt')).toBeVisible()
+  await page.screenshot({ path: `${shots}/my-access.png` })
+  await panel.getByRole('button', { name: 'Close' }).click()
+  await expect(panel).toHaveCount(0)
   expect(errors).toEqual([])
 })

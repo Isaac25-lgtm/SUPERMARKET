@@ -198,7 +198,8 @@ def _ensure_accounts(company):
 def _ensure_fiscal_years(company):
     FiscalYear = t.model("account.fiscalyear")
     SequenceStrict = t.model("ir.sequence.strict")
-    for year in CONFIG["fiscal_years"]:
+    current = dt.date.today().year
+    for year in sorted(set(CONFIG["fiscal_years"]) | {current, current + 1}):
         if FiscalYear.search([("company", "=", company.id), ("name", "=", str(year))]):
             continue
         move_seq, = SequenceStrict.create([{

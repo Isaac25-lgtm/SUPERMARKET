@@ -116,11 +116,17 @@ def _transfer_view(row: dict) -> dict:
     return row
 
 
-def list_transfers(actor: Principal, status: str | None = None) -> list[dict]:
+def list_transfers(actor: Principal, status: str | None = None, *, branch_id: int | None = None) -> list[dict]:
     actor.require("stock.view")
-    rows = t.sql("""SELECT * FROM motion.transfer WHERE (%s::text IS NULL OR status=%s) ORDER BY requested_at DESC LIMIT 200""",
-                 (status, status))
-    return [_transfer_view(r) for r in rows if actor.can_branch(r["from_branch_id"]) or actor.can_branch(r["to_branch_id"])]
+    if branch_id is not None:
+        actor.require_branch(branch_id, action="transfer.view")
+    branches = sorted(actor.branch_ids)
+    rows = t.sql("""SELECT * FROM motion.transfer WHERE (%s::text IS NULL OR status=%s)
+                    AND (%s OR from_branch_id=ANY(%s) OR to_branch_id=ANY(%s))
+                    AND (%s::int IS NULL OR from_branch_id=%s OR to_branch_id=%s)
+                    ORDER BY requested_at DESC, id DESC LIMIT 200""",
+                 (status, status, actor.all_branches, branches, branches, branch_id, branch_id, branch_id))
+    return [_transfer_view(r) for r in rows]
 
 
 def get_transfer(actor: Principal, transfer_id: int) -> dict:
@@ -185,9 +191,10 @@ def sync_transfer_approval(transfer_id: int) -> None:
 
 def dispatch(actor: Principal, transfer_id: int, *, lines: list[dict] | None = None) -> dict:
     actor.require("transfer.dispatch", action="transfer.dispatch")
-    sync_transfer_approval(transfer_id)
     row = _transfer(transfer_id, lock=True)
     actor.require_branch(row["from_branch_id"], action="transfer.dispatch", target_type="transfer", target_id=row["ref"])
+    sync_transfer_approval(transfer_id)
+    row = _transfer(transfer_id)
     if row["status"] != "approved":
         raise Conflict(f"Transfer must be approved before dispatch (status: {row['status']}).")
     tlines = t.sql("SELECT * FROM motion.transfer_line WHERE transfer_id=%s ORDER BY id", (transfer_id,))
@@ -195,8 +202,9 @@ def dispatch(actor: Principal, transfer_id: int, *, lines: list[dict] | None = N
     src = common.branch(row["from_branch_id"])
     dst = common.branch(row["to_branch_id"])
     pids = [ln["product_id"] for ln in tlines]
-    from .pos import _lock_guards
-    _lock_guards(src["storage_location_id"], pids)
+    if len(override) != len(lines or []) or not override.keys() <= set(pids):
+        raise Invalid("List each dispatched product at most once and use products from this transfer.")
+    common.lock_stock(src["storage_location_id"], pids)
     on_hand = common.stock_on_hand([src["storage_location_id"]], pids)
     names = common.product_names(set(pids))
     send = {}
@@ -248,6 +256,10 @@ def receive(actor: Principal, transfer_id: int, *, lines: list[dict], note: str 
                         target_type="transfer", target_id=row["ref"])
     counts = {int(x["product_id"]): (common.qty(x["received_qty"]), common.qty(x.get("damaged_qty") or 0)) for x in lines}
     tlines = t.sql("SELECT * FROM motion.transfer_line WHERE transfer_id=%s ORDER BY id", (transfer_id,))
+    sent_ids = {ln["product_id"] for ln in tlines if ln["dispatched_qty"]}
+    if len(counts) != len(lines) or counts.keys() != sent_ids:
+        raise Invalid("Enter one received count for each dispatched product, including zero when none arrived.")
+    common.lock_stock(common.transit_location_id(), list(sent_ids))
     Shipment = t.model("stock.shipment.internal")
     Move = t.model("stock.move")
     shipment = Shipment(row["tryton_shipment_id"])
@@ -259,7 +271,7 @@ def receive(actor: Principal, transfer_id: int, *, lines: list[dict], note: str 
             sent = common.qty(ln["dispatched_qty"] or 0)
             if not sent:
                 continue
-            got, damaged = counts.get(ln["product_id"], (sent, Decimal(0)))
+            got, damaged = counts[ln["product_id"]]
             if got < 0 or damaged < 0 or got + damaged > sent:
                 raise Invalid("Received + damaged cannot exceed the dispatched quantity.")
             move = by_product[ln["product_id"]]
@@ -273,6 +285,11 @@ def receive(actor: Principal, transfer_id: int, *, lines: list[dict], note: str 
                 if q > 0:
                     discrepancies.append((kind, ln["product_id"], q, common.money(q * costs.get(ln["product_id"], 0))))
             t.execute("UPDATE motion.transfer_line SET received_qty=%s, damaged_qty=%s WHERE id=%s", (got, damaged, ln["id"]))
+        if discrepancies:
+            # The audited counts explain this shipment's quantity warning.
+            # Leave unrelated inventory and accounting warnings enabled.
+            Warning = t.model("res.user.warning")
+            Warning.skip(Warning.format("check_quantity_product", [shipment]))
         Shipment.do([shipment])
         common.expect_state(shipment, "done", what="transfer receipt")
     for kind, pid, q, value in discrepancies:
@@ -296,12 +313,15 @@ def receive(actor: Principal, transfer_id: int, *, lines: list[dict], note: str 
 
 def discrepancies(actor: Principal, *, status: str | None = "open", branch_id: int | None = None) -> list[dict]:
     actor.require_any("stock.view", "pos.shift.reconcile", "finance.view")
-    rows = t.sql("""SELECT d.*, b.code AS branch_code, pt.name AS product_name FROM motion.discrepancy d
+    if branch_id is not None:
+        actor.require_branch(branch_id, action="stock.discrepancies")
+    return t.sql("""SELECT d.*, b.code AS branch_code, pt.name AS product_name FROM motion.discrepancy d
                     JOIN motion_branch b ON b.id=d.branch_id
                     LEFT JOIN product_product pp ON pp.id=d.product_id LEFT JOIN product_template pt ON pt.id=pp.template
                     WHERE (%s::text IS NULL OR d.status=%s) AND (%s::int IS NULL OR d.branch_id=%s)
-                    ORDER BY d.created_at DESC LIMIT 300""", (status, status, branch_id, branch_id))
-    return [r for r in rows if actor.can_branch(r["branch_id"])]
+                      AND (%s OR d.branch_id=ANY(%s))
+                    ORDER BY d.created_at DESC, d.id DESC LIMIT 300""",
+                 (status, status, branch_id, branch_id, actor.all_branches, sorted(actor.branch_ids)))
 
 
 def request_writeoff(actor: Principal, *, branch_id: int, product_id: int, quantity: Decimal, reason: str,
@@ -353,25 +373,25 @@ def execute_writeoff(actor: Principal, approval_id: int) -> dict:
     pid, q = int(p["product_id"]), common.qty(p["quantity"])
     b = common.branch(req["branch_id"])
     # C1/H4: re-validate at execution against server-owned records, under lock.
+    if q <= 0 or p["source"] not in {"shelf", "transit"}:
+        raise Conflict("The approved write-off has invalid stock details.")
     if p["source"] == "transit":
-        d = t.sql_one("SELECT * FROM motion.discrepancy WHERE id=%s FOR UPDATE", (int(p.get("discrepancy_id") or 0),))
+        tr, d = _hold_transfer_discrepancy(int(p.get("discrepancy_id") or 0))
         if (not d or d["status"] != "pending_approval" or d["approval_id"] != req["id"] or d["product_id"] != pid
                 or common.qty(d["quantity"]) != q or d["branch_id"] != req["branch_id"]):
             raise Conflict("The discrepancy no longer matches this approved write-off.")
-        transit = common.transit_location_id()
-        from .pos import _lock_guards
-        _lock_guards(transit, [pid])
-        if common.stock_on_hand([transit], [pid]).get((transit, pid), Decimal(0)) < q:
+        from_loc = common.transit_location_id()
+        common.lock_stock(from_loc, [pid])
+        if common.stock_on_hand([from_loc], [pid]).get((from_loc, pid), Decimal(0)) < q:
             raise Conflict("Those units are no longer in transit.")
     elif p.get("discrepancy_id"):
         raise Conflict("Invalid write-off source.")
     else:
-        from .pos import _lock_guards
-        _lock_guards(b["storage_location_id"], [pid])  # same guard as checkout
-        have = common.stock_on_hand([b["storage_location_id"]], [pid]).get((b["storage_location_id"], pid), Decimal(0))
+        from_loc = b["storage_location_id"]
+        common.lock_stock(from_loc, [pid])
+        have = common.stock_on_hand([from_loc], [pid]).get((from_loc, pid), Decimal(0))
         if q > have:
             raise Conflict(f"Only {have} on hand now; the write-off was approved for {q}.")
-    from_loc = common.transit_location_id() if p["source"] == "transit" else b["storage_location_id"]
     Move = t.model("stock.move")
     with t.set_context(**common.tryton_context(b["id"])), t.transaction().set_user(actor.tryton_user_id or 0):
         move, = Move.create([{"product": pid, "unit": _uoms([pid])[pid], "quantity": float(q), "company": common.company_id(),
@@ -380,34 +400,53 @@ def execute_writeoff(actor: Principal, approval_id: int) -> dict:
         Move.do([move])
         common.expect_state(move, "done", what="write-off move")
     approvals.mark_executed(approval_id, actor=actor, result_type="stock.move", result_id=move.id)
-    if p.get("discrepancy_id"):
+    if p["source"] == "transit":
         t.execute("""UPDATE motion.discrepancy SET status='resolved', resolution='written_off', resolved_by=%s,
                      resolved_at=now(), resolution_note=%s WHERE id=%s""", (actor.user_id, req["ref"], int(p["discrepancy_id"])))
-        _maybe_close_transfer(int(t.sql_one("SELECT source_id FROM motion.discrepancy WHERE id=%s", (int(p["discrepancy_id"]),))["source_id"]))
+        _maybe_close_transfer(tr)
     record(actor=actor, action="stock.writeoff.execute", target_type="approval", target_id=req["ref"], branch_id=b["id"],
            amount=req["amount"], after={"product": p["product"], "quantity": str(q), "source": p["source"]})
     return approvals.get(actor, approval_id)
 
 
+def _hold_transfer_discrepancy(discrepancy_id: int) -> tuple[dict, dict]:
+    link = t.sql_one("SELECT source_id FROM motion.discrepancy WHERE id=%s AND source_type='transfer'",
+                     (discrepancy_id,))
+    if not link:
+        raise NotFound("Transfer discrepancy not found.")
+    transfer_id = int(link["source_id"])
+    # Write to the parent before locking a child. A concurrent sibling resolver
+    # must retry with a fresh REPEATABLE READ snapshot before deciding to close.
+    tr = t.sql_one("UPDATE motion.transfer SET status=status WHERE id=%s RETURNING *", (transfer_id,))
+    if not tr or tr["status"] != "received_with_discrepancy":
+        raise Conflict("This transfer has no outstanding discrepancies.")
+    d = t.sql_one("SELECT * FROM motion.discrepancy WHERE id=%s FOR UPDATE", (discrepancy_id,))
+    return tr, d
+
+
 def receive_late(actor: Principal, discrepancy_id: int, quantity: Decimal, note: str) -> dict:
     """Units reported short later turn up: move them transit -> destination."""
     actor.require("transfer.receive", action="transfer.receive_late")
-    d = t.sql_one("SELECT * FROM motion.discrepancy WHERE id=%s FOR UPDATE", (discrepancy_id,))
+    tr, d = _hold_transfer_discrepancy(discrepancy_id)
     if not d or d["status"] != "open" or d["kind"] != "transfer_shortage":
         raise Conflict("Discrepancy is not open.")
-    tr = _transfer(int(d["source_id"]))
     actor.require_branch(tr["to_branch_id"], action="transfer.receive_late")
     q = common.qty(quantity)
     if q <= 0 or q > common.qty(d["quantity"]):
         raise Invalid("Quantity must be between 0 and the shortage.")
     dst = common.branch(tr["to_branch_id"])
+    transit = common.transit_location_id()
+    common.lock_stock(transit, [d["product_id"]])
+    if common.stock_on_hand([transit], [d["product_id"]]).get((transit, d["product_id"]), Decimal(0)) < q:
+        raise Conflict("Those units are no longer in transit.")
     Move = t.model("stock.move")
     with t.set_context(**common.tryton_context(dst["id"])), t.transaction().set_user(actor.tryton_user_id or 0):
         move, = Move.create([{"product": d["product_id"], "unit": _uoms([d["product_id"]])[d["product_id"]],
                               "quantity": float(q), "company": common.company_id(),
-                              "from_location": common.transit_location_id(), "to_location": dst["storage_location_id"],
+                              "from_location": transit, "to_location": dst["storage_location_id"],
                               "effective_date": common.today()}])
         Move.do([move])
+        common.expect_state(move, "done", what="late transfer receipt")
     remaining = common.qty(d["quantity"]) - q
     if remaining:
         t.execute("UPDATE motion.discrepancy SET quantity=%s WHERE id=%s", (remaining, discrepancy_id))
@@ -416,21 +455,19 @@ def receive_late(actor: Principal, discrepancy_id: int, quantity: Decimal, note:
                      resolution_note=%s WHERE id=%s""", (actor.user_id, note, discrepancy_id))
     t.execute("UPDATE motion.transfer_line SET received_qty = COALESCE(received_qty,0) + %s WHERE transfer_id=%s AND product_id=%s",
               (q, tr["id"], d["product_id"]))
-    _maybe_close_transfer(tr["id"])
+    _maybe_close_transfer(tr)
     record(actor=actor, action="transfer.receive_late", target_type="transfer", target_id=tr["ref"], branch_id=dst["id"],
            reason=note, after={"quantity": str(q), "remaining_shortage": str(remaining)})
     return get_transfer(actor, tr["id"])
 
 
-def _maybe_close_transfer(transfer_id: int) -> None:
+def _maybe_close_transfer(tr: dict) -> None:
     open_n = t.sql_one("""SELECT count(*) AS n FROM motion.discrepancy WHERE source_type='transfer' AND source_id=%s
-                          AND status <> 'resolved'""", (str(transfer_id),))["n"]
+                          AND status <> 'resolved'""", (str(tr["id"]),))["n"]
     if open_n == 0:
-        tr = _transfer(transfer_id)
-        if tr["status"] == "received_with_discrepancy":
-            t.execute("UPDATE motion.transfer SET status='closed' WHERE id=%s", (transfer_id,))
-            t.execute("UPDATE motion.approval_request SET status='executed', fulfilment_status='closed', consumed_at=now() WHERE id=%s",
-                      (tr["approval_id"],))
+        t.execute("UPDATE motion.transfer SET status='closed' WHERE id=%s", (tr["id"],))
+        approvals.set_fulfilment(tr["approval_id"], "closed")
+        t.execute("UPDATE motion.approval_request SET status='executed', consumed_at=now() WHERE id=%s", (tr["approval_id"],))
 
 
 def record_count(actor: Principal, *, branch_id: int, counts: list[dict], note: str | None = None) -> dict:

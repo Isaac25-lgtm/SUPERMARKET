@@ -18,6 +18,7 @@ import sys
 import uuid
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import psycopg
 import pytest
@@ -32,10 +33,12 @@ _load_env_file(Path(os.environ.get("MOTION_ENV_FILE", ROOT / ".env.dev")))
 TEST_URL = os.environ.get("MOTION_TEST_DATABASE_URL")
 if not TEST_URL:
     raise RuntimeError("MOTION_TEST_DATABASE_URL is required (run infra/scripts/dev-db.sh init)")
-if "127.0.0.1" not in TEST_URL and "localhost" not in TEST_URL:
-    raise RuntimeError("Refusing to run destructive tests against a non-local database")
-TEMPLATE_URL = TEST_URL.rsplit("/", 1)[0] + "/motion_test_tpl"
-ADMIN_URL = TEST_URL.rsplit("/", 1)[0] + "/postgres"
+test_target = urlsplit(TEST_URL)
+if (test_target.scheme not in {"postgres", "postgresql"} or test_target.hostname not in {"127.0.0.1", "::1"}
+        or test_target.path != "/motion_test" or test_target.query or test_target.fragment or not test_target.port):
+    raise RuntimeError("Use an explicit disposable loopback PostgreSQL URL pointing to motion_test.")
+TEMPLATE_URL = test_target._replace(path="/motion_test_tpl").geturl()
+ADMIN_URL = test_target._replace(path="/postgres").geturl()
 
 
 def _fingerprint() -> str:
@@ -88,7 +91,6 @@ os.environ["MOTION_ENV"] = "test"
 os.environ.pop("MOTION_AUTO_BOOTSTRAP", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
-
 from motion_api import tryton as t  # noqa: E402
 from motion_api.creds import demo_password  # noqa: E402
 from motion_api.main import STATE, app  # noqa: E402

@@ -14,6 +14,7 @@ only delivery-status columns move forward.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -29,6 +30,9 @@ CREATE TABLE IF NOT EXISTS grants (
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, register_id INTEGER NOT NULL,
     created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS login_failure (
+    username TEXT NOT NULL, client_ip TEXT NOT NULL, attempted_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS login_failure_at ON login_failure(attempted_at);
 CREATE TABLE IF NOT EXISTS receipt_seq (register_id INTEGER PRIMARY KEY, next INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS outbox (
     event_id TEXT PRIMARY KEY,
@@ -42,7 +46,9 @@ CREATE TABLE IF NOT EXISTS outbox (
     last_error TEXT,
     central_number TEXT,
     ack TEXT,
-    acked_at TEXT);
+    acked_at TEXT,
+    in_snapshot INTEGER NOT NULL DEFAULT 0,
+    request_hash TEXT);
 CREATE INDEX IF NOT EXISTS outbox_status ON outbox(status, created_at);
 CREATE TRIGGER IF NOT EXISTS outbox_payload_immutable BEFORE UPDATE OF payload, event_id, created_at, cashier,
     register_id, local_receipt_no ON outbox
@@ -57,9 +63,25 @@ class Store:
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            if os.name == "posix":
+                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600)
+                try:
+                    os.fchmod(fd, 0o600)
+                finally:
+                    os.close(fd)
         self._local = threading.local()
         with self.connect() as c:
             c.executescript(SCHEMA)
+        with self.write() as c:
+            columns = {row["name"] for row in c.execute("PRAGMA table_info(outbox)")}
+            if "in_snapshot" not in columns:
+                c.execute("ALTER TABLE outbox ADD COLUMN in_snapshot INTEGER NOT NULL DEFAULT 0")
+            if "request_hash" not in columns:
+                c.execute("ALTER TABLE outbox ADD COLUMN request_hash TEXT")
+            c.execute("""CREATE TRIGGER IF NOT EXISTS outbox_request_immutable BEFORE UPDATE OF request_hash ON outbox
+                         BEGIN SELECT RAISE(ABORT, 'outbox request identity is immutable'); END""")
+            c.execute("""CREATE INDEX IF NOT EXISTS outbox_unreflected ON outbox(event_id)
+                         WHERE in_snapshot=0""")
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)

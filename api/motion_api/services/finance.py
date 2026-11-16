@@ -26,6 +26,7 @@ from decimal import Decimal
 from .. import tryton as t
 from ..errors import Conflict, Invalid
 from ..security import Principal
+from ..settings import get_settings
 from . import common
 
 ZERO = Decimal(0)
@@ -74,7 +75,12 @@ def period_bounds(period: str, date_from: dt.date | None = None, date_to: dt.dat
     if period == "last30":
         return today - dt.timedelta(days=29), today, "Last 30 days"
     if period == "fytd":
-        return dt.date(today.year, 1, 1), today, "Financial year to date"
+        row = t.sql_one("""SELECT start_date FROM account_fiscalyear WHERE company=%s
+                           AND %s BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1""",
+                        (common.company_id(), today))
+        if not row:
+            raise Invalid("The current financial year has not been configured.")
+        return row["start_date"], today, "Financial year to date"
     if period == "custom":
         if not date_from or not date_to or date_from > date_to:
             raise Invalid("Choose a valid date range.")
@@ -149,12 +155,13 @@ def profit_and_loss(actor: Principal, *, period: str = "month", branch_id: int |
                      for (c, n, cls), v in sorted(accounts.items())],
         "reconciles": check == consolidated["operating_profit"],
         "definitions": __doc__,
-        "test_data": True,
+        "test_data": get_settings().demo_mode,
     }
 
 
 def daily_series(actor: Principal, *, days: int = 30, branch_id: int | None = None) -> list[dict]:
     actor.require_any("finance.view", "dashboard.branch")
+    include_profit = actor.has("finance.view")
     branch_ids, unalloc = _scope(actor, branch_id)
     d1 = common.today()
     d0 = d1 - dt.timedelta(days=days - 1)
@@ -170,12 +177,14 @@ def daily_series(actor: Principal, *, days: int = 30, branch_id: int | None = No
     out: dict = {}
     for i in range(days):
         day = d0 + dt.timedelta(days=i)
-        out[day] = {"day": day, "net_sales": ZERO, "gross_profit": ZERO, "by_branch": {}}
+        out[day] = {"day": day, "net_sales": ZERO, "by_branch": {}}
+        if include_profit:
+            out[day]["gross_profit"] = ZERO
     for r in rows:
         o = out[r["day"]]
-        gp = r["net_sales"] - r["cogs"]
         o["net_sales"] += r["net_sales"]
-        o["gross_profit"] += gp
+        if include_profit:
+            o["gross_profit"] += r["net_sales"] - r["cogs"]
         code = codes.get(r["branch"], "HQ")
         o["by_branch"][code] = o["by_branch"].get(code, ZERO) + r["net_sales"]
     return list(out.values())
@@ -212,35 +221,37 @@ def sales_kpis(actor: Principal, *, d0: dt.date, d1: dt.date, branch_ids: list[i
                                FROM motion.pos_sale s JOIN motion.app_user u ON u.id=s.cashier_id
                                WHERE s.sale_date BETWEEN %s AND %s AND s.branch_id = ANY(%s)
                                GROUP BY 1 ORDER BY 3 DESC""", (d0, d1, branch_ids))
-    s["by_hour"] = t.sql("""SELECT extract(hour FROM posted_at AT TIME ZONE %s)::int AS hour, count(*) AS n, sum(total) AS amount
+    s["by_hour"] = t.sql("""SELECT extract(hour FROM COALESCE(local_created_at, posted_at) AT TIME ZONE %s)::int AS hour, count(*) AS n, sum(total) AS amount
                             FROM motion.pos_sale WHERE kind='sale' AND sale_date BETWEEN %s AND %s AND branch_id = ANY(%s)
                             GROUP BY 1 ORDER BY 1""", (str(common.local_tz()), d0, d1, branch_ids))
     return s
 
 
-def cash_position(actor: Principal) -> dict:
+def cash_position(actor: Principal, branch_id: int | None = None) -> dict:
     actor.require("finance.view", action="finance.cash")
+    branches, unallocated = _scope(actor, branch_id)
     rows = t.sql("""SELECT a.code, a.name, sum(l.debit - l.credit) AS balance FROM account_move_line l
                     JOIN account_move m ON m.id=l.move JOIN account_account a ON a.id=l.account
                     WHERE m.state='posted' AND a.code LIKE '1.1.1.%%'
                       AND (m.branch = ANY(%s) OR (m.branch IS NULL AND %s))
-                    GROUP BY 1,2 ORDER BY 1""", (actor.scoped_branch_ids(common.branch_ids()), actor.all_branches))
+                    GROUP BY 1,2 ORDER BY 1""", (branches, unallocated))
     total = sum((r["balance"] for r in rows), ZERO)
     return {"accounts": rows, "total": total,
             "note": "Mobile money and card balances are UNVERIFIED claims until matched to provider statements."}
 
 
-def payables_summary(actor: Principal) -> dict:
+def payables_summary(actor: Principal, branch_id: int | None = None) -> dict:
     actor.require("finance.view")
+    branches, unallocated = _scope(actor, branch_id)
     rows = t.sql("""SELECT i.state, count(*) AS n, COALESCE(sum(i.total_amount_cache),0) AS total FROM account_invoice i
                     WHERE i.type='in' AND i.state IN ('draft','validated','posted')
                       AND (i.branch = ANY(%s) OR (i.branch IS NULL AND %s)) GROUP BY 1""",
-                 (actor.scoped_branch_ids(common.branch_ids()), actor.all_branches))
+                 (branches, unallocated))
     open_bal = t.sql_one("""SELECT COALESCE(sum(l.credit - l.debit),0) AS open FROM account_move_line l JOIN account_account a ON a.id=l.account
                             JOIN account_move m ON m.id=l.move
                             WHERE a.code='2.1.1.01' AND l.reconciliation IS NULL AND m.state='posted'
                               AND (m.branch = ANY(%s) OR (m.branch IS NULL AND %s))""",
-                         (actor.scoped_branch_ids(common.branch_ids()), actor.all_branches))
+                         (branches, unallocated))
     return {"by_state": rows, "supplier_balance": open_bal["open"]}
 
 
@@ -258,9 +269,9 @@ def break_even(actor: Principal, *, period: str = "last30", branch_id: int | Non
         "Blended contribution margin across all products; a different sales mix changes the break-even point.",
         "Expenses only appear once bills are approved and posted; missing bills understate fixed costs.",
     ]
-    if not sales:
+    if sales <= 0:
         return {"period": pnl["period"], "status": "not_enough_data", "assumptions": assumptions,
-                "message": "No posted sales in this period."}
+                "message": "Positive net sales are needed to estimate break-even."}
     cm_ratio = (sales - variable) / sales
     if cm_ratio <= 0:
         return {"period": pnl["period"], "status": "negative_margin", "assumptions": assumptions,
@@ -271,14 +282,15 @@ def break_even(actor: Principal, *, period: str = "last30", branch_id: int | Non
             "break_even_daily": common.money(be_sales / days), "actual_daily": common.money(sales / days),
             "margin_of_safety": common.money(sales - be_sales),
             "margin_of_safety_pct": ((sales - be_sales) / sales * 100).quantize(Decimal("0.1")),
-            "assumptions": assumptions, "fixed_costs_complete": fixed > 0, "test_data": True}
+            "assumptions": assumptions, "fixed_costs_complete": fixed > 0, "test_data": get_settings().demo_mode}
 
 
 def capital_recovery(actor: Principal) -> dict:
     """Investment payback from dated net operating cash flows (NOT accounting profit)."""
     actor.require("finance.view", action="finance.payback")
     require_company_wide(actor, "finance.payback")
-    inv = t.sql("SELECT * FROM motion.investment ORDER BY invested_on")
+    today = common.today()
+    inv = t.sql("SELECT * FROM motion.investment WHERE invested_on<=%s ORDER BY invested_on, id", (today,))
     if not inv:
         return {"status": "no_investment", "message": "Record the original investment to track capital recovery."}
     total = sum((i["amount"] for i in inv), ZERO)
@@ -291,37 +303,48 @@ def capital_recovery(actor: Principal) -> dict:
                    bool_or(a.code LIKE '3.%%') AS touches_equity,
                    bool_and(a.code LIKE '1.1.1.%%') AS cash_only
             FROM account_move m JOIN account_move_line l ON l.move=m.id JOIN account_account a ON a.id=l.account
-            WHERE m.state='posted' AND m.date >= %s GROUP BY m.id, m.date)
+            WHERE m.state='posted' AND m.date BETWEEN %s AND %s GROUP BY m.id, m.date)
         SELECT date_trunc('week', date)::date AS week, sum(cash_delta) AS net_cash
         FROM cash_moves WHERE NOT touches_equity AND NOT cash_only AND cash_delta IS NOT NULL
-        GROUP BY 1 ORDER BY 1""", (start,))
+        GROUP BY 1 ORDER BY 1""", (start, today))
     cumulative = ZERO
     series = []
-    for r in rows:
-        cumulative += r["net_cash"]
-        series.append({"week": r["week"], "net_cash": r["net_cash"], "cumulative": cumulative,
-                       "unrecovered": total - cumulative})
+    week_length = dt.timedelta(days=7)
+    current_week = today - dt.timedelta(days=today.weekday())
+    if rows:
+        net_cash = {r["week"]: r["net_cash"] for r in rows}
+        week = rows[0]["week"]
+        while week <= current_week:
+            cash = net_cash.get(week, ZERO)
+            cumulative += cash
+            series.append({"week": week, "net_cash": cash, "cumulative": cumulative,
+                           "unrecovered": max(ZERO, total - cumulative)})
+            week += week_length
     first = t.sql_one("SELECT min(date) AS d FROM account_move WHERE state='posted'")["d"]
-    weeks = len(series)
+    completed = [row for row in series if start <= row["week"] < current_week]
+    weeks = len(completed)
     out = {"investment_total": total, "investments": inv, "series": series, "recovered": cumulative,
-           "unrecovered": total - cumulative, "recovered_pct": (cumulative / total * 100).quantize(Decimal("0.1")),
+           "unrecovered": max(ZERO, total - cumulative), "recovered_pct": (cumulative / total * 100).quantize(Decimal("0.1")),
            "data_from": first, "weeks_of_data": weeks, "test_data": any(i["is_test_data"] for i in inv),
            "assumptions": ["Recovery = cumulative net cash generated by operations since the first investment date.",
                            "Owner injections/withdrawals (equity) and transfers between cash accounts are excluded.",
                            "Projection assumes the average weekly cash generation of the last 8 weeks continues.",
                            "This is not accounting profit; stock purchased but unsold reduces recovered cash."]}
+    if cumulative >= total:
+        out.update(status="recovered", message="Recorded net cash has covered the original investment.")
+        return out
     if weeks < 8:
         out.update(status="not_enough_data",
                    message=f"Only {weeks} weeks of cash history since the first investment; at least 8 are needed for a projection.")
         return out
-    recent = series[-8:]
+    recent = completed[-8:]
     avg = sum((w["net_cash"] for w in recent), ZERO) / len(recent)
     if avg <= 0:
         out.update(status="not_recovering", message="Average weekly net cash generation is not positive.")
         return out
     weeks_left = (out["unrecovered"] / avg)
     out.update(status="projected", avg_weekly_net_cash=common.money(avg), weeks_to_recover=weeks_left.quantize(Decimal("0.1")),
-               estimated_recovery_date=common.today() + dt.timedelta(weeks=float(weeks_left)),
+               estimated_recovery_date=today + dt.timedelta(weeks=float(weeks_left)),
                uncertainty="High — based on a short history; treat as indicative only.")
     return out
 
@@ -378,13 +401,23 @@ def bank_deposit(actor: Principal, *, branch_id: int, amount: Decimal, date: dt.
         raise Invalid("Amount must be positive.")
     if not reference or len(reference.strip()) < 3:
         raise Invalid("Enter the bank slip reference.")
+    if date > common.today():
+        raise Invalid("A bank deposit cannot be posted in the future.")
+    common.lock_safe(branch_id)
     dup = t.sql_one("""SELECT number FROM account_move WHERE branch=%s AND upper(description)=%s AND state='posted'""",
                     (branch_id, f"BANK DEPOSIT {request['reference']}"))
     if dup:
         raise Conflict(f"Bank slip {reference.strip()} is already recorded for this branch ({dup['number']}).")
-    safe = t.sql_one("""SELECT COALESCE(sum(l.debit - l.credit), 0) AS b FROM account_move_line l JOIN account_move m ON m.id=l.move
-                        JOIN account_account a ON a.id=l.account WHERE m.state='posted' AND a.code='1.1.1.02' AND m.branch=%s""",
-                     (branch_id,))["b"]
+    safe = t.sql_one("""WITH daily AS (
+                           SELECT m.date AS day, sum(l.debit-l.credit) AS delta
+                           FROM account_move_line l JOIN account_move m ON m.id=l.move
+                           JOIN account_account a ON a.id=l.account
+                           WHERE m.state='posted' AND a.code='1.1.1.02' AND m.branch=%s
+                           GROUP BY m.date UNION ALL SELECT %s::date, 0
+                       ), balances AS (
+                           SELECT day, sum(sum(delta)) OVER (ORDER BY day) AS balance FROM daily GROUP BY day
+                       )
+                       SELECT min(balance) AS b FROM balances WHERE day>=%s""", (branch_id, date, date))["b"]
     if amount > safe:
         raise Invalid(f"Only {common.money(safe)} is recorded in this branch's safe.")
     Move = t.model("account.move")

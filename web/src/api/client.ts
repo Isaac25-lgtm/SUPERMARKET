@@ -36,7 +36,7 @@ export function setUnauthenticatedHandler(fn: () => void) {
   onUnauthenticated = fn
 }
 
-async function request<T>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, query?: Query, download = false): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (method !== 'GET') {
@@ -53,6 +53,12 @@ async function request<T>(method: string, path: string, body?: unknown, query?: 
     })
   } catch {
     throw new ApiError(0, 'network', 'Cannot reach the server. Check your connection.')
+  }
+  if (download && res.ok) {
+    if (!res.headers.get('content-type')?.startsWith('text/csv')) {
+      throw new ApiError(res.status, 'invalid_response', 'The server did not provide a CSV file.')
+    }
+    return await res.blob() as T
   }
   const text = await res.text()
   const data = text ? safeJson(text) : null
@@ -80,6 +86,15 @@ export const api = {
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body ?? {}),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body ?? {}),
   url: withQuery,
+  downloadCsv: async (path: string, filename: string, query?: Query) => {
+    const blob = await request<Blob>('POST', path, undefined, query, true)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  },
 }
 
 export function uuid(): string {

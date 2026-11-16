@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Download } from 'lucide-react'
 import { useState } from 'react'
 import { api } from '../api/client'
@@ -14,6 +14,9 @@ export default function ReportsPage() {
   const { branchId } = useAuth()
   const [period, setPeriod] = useState('month')
   const q = useQuery({ queryKey: ['sales-kpis', period, branchId], queryFn: () => api.get<R>('/api/finance/sales', { period, branch_id: branchId }) })
+  const download = useMutation({
+    mutationFn: (name: string) => api.downloadCsv(`/api/reports/${name}.csv`, `${name}.csv`, { period, branch_id: branchId }),
+  })
   const d = q.data
   return (
     <div>
@@ -23,9 +26,10 @@ export default function ReportsPage() {
         <div className="text-[14px] font-semibold">Downloads (CSV)</div>
         <div className="mt-3 flex flex-wrap gap-2">
           {[['pnl', 'Branch & consolidated P&L'], ['stock', 'Stock on hand by branch'], ['shifts', 'Cashier shift settlement']].map(([n, l]) => (
-            <a key={n} href={api.url(`/api/reports/${n}.csv`, { period, branch_id: branchId })}><Button icon={<Download className="size-4" />}>{l}</Button></a>
+            <Button key={n} disabled={download.isPending} onClick={() => download.mutate(n)} icon={<Download className="size-4" />}>{l}</Button>
           ))}
         </div>
+        <ErrorBox error={download.error} />
       </Card>
       {q.isLoading ? <LoadingBlock rows={6} /> : q.error ? <ErrorBox error={q.error} /> : d && (
         <div className="grid gap-5 xl:grid-cols-2">

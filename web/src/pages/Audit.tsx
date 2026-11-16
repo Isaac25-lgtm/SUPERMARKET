@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Download, Lock, ScrollText, Search } from 'lucide-react'
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -13,16 +13,20 @@ type R = Record<string, any>
 export default function AuditPage() {
   const { can, me } = useAuth()
   const [params] = useSearchParams()
-  const thirty = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
-  const [f, setF] = useState({ q: '', actor: params.get('actor') ?? '', branch: '', action: '', outcome: '', date_from: thirty, date_to: todayISO(), min_amount: '' })
+  const [f, setF] = useState(() => ({
+    q: '', actor: params.get('actor') ?? '', branch: '', action: '', outcome: '',
+    date_from: new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10), date_to: todayISO(), min_amount: '',
+  }))
   const [applied, setApplied] = useState(f)
   const [open, setOpen] = useState<R | null>(null)
   const query = { ...applied, actor: applied.actor || undefined, branch: applied.branch || undefined, min_amount: applied.min_amount || undefined }
   const q = useQuery({ queryKey: ['audit', applied], queryFn: () => api.get<{ events: R[]; actors: R[]; actions: string[] }>('/api/audit', query) })
+  const download = useMutation({ mutationFn: () => api.downloadCsv('/api/audit/export.csv', 'audit-trail.csv', query) })
   return (
     <div>
       <PageHeader title="Audit trail" subtitle={<span className="inline-flex items-center gap-1.5"><Lock className="size-3.5" />Append-only: the database rejects any edit or deletion of audit events, including by administrators of this app.</span>}
-        actions={can('audit.export') && <a href={api.url('/api/audit/export.csv', query)}><Button icon={<Download className="size-4" />}>Export CSV</Button></a>} />
+        actions={can('audit.export') && <Button onClick={() => download.mutate()} loading={download.isPending} icon={<Download className="size-4" />}>Export CSV</Button>} />
+      <ErrorBox error={download.error} />
       <Card className="mb-4 p-3">
         <form className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8" onSubmit={(e) => { e.preventDefault(); setApplied(f) }}>
           <div className="relative sm:col-span-2"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" /><Input aria-label="Search" className="pl-9" placeholder="Search action, reference, reason…" value={f.q} onChange={(e) => setF({ ...f, q: e.target.value })} /></div>

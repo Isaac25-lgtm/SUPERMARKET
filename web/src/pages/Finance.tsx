@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, Download, Plus, XCircle } from 'lucide-react'
+import { CheckCircle2, Plus, XCircle } from 'lucide-react'
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/auth'
+import { CsvButton } from '../components/CsvButton'
 import { TrendChart } from '../components/charts'
 import {
   Button, Card, CardHeader, Empty, ErrorBox, Field, Input, Kpi, LoadingBlock, Modal, Notice, PageHeader, Select, Table, Tabs, Td, Th,
@@ -67,7 +68,7 @@ function Pnl() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <PeriodPicker {...{ period, setPeriod, from, to, setFrom, setTo }} />
-        {can('reports.export') && period !== 'custom' && <a href={api.url('/api/reports/pnl.csv', { period, branch_id: branchId })}><Button icon={<Download className="size-4" />}>Export CSV</Button></a>}
+        {can('reports.export') && period !== 'custom' && <CsvButton path="/api/reports/pnl.csv" filename="pnl.csv" query={{ period, branch_id: branchId }} />}
       </div>
       {q.isLoading ? <LoadingBlock rows={8} /> : q.error ? <ErrorBox error={q.error} /> : d && (
         <>

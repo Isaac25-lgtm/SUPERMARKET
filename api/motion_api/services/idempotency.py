@@ -9,12 +9,9 @@ Usage inside a unit of work::
     idempotency.complete("pos.sale", actor, key, result_type="pos_sale", result_id=row["id"])
 
 ``claim`` runs *before* anything is touched (stock guards, line counters,
-approvals). Same key + same request returns the earlier result; same key + a
-different request is refused. The operation row is inserted by ``complete`` in
-the same database transaction as the business result, so it exists exactly when
-the result does. Two simultaneous requests with one key: the second blocks on the
-primary key until the first commits, fails serialization, is retried by the
-engine with a fresh snapshot and then replays the first result.
+approvals). The reservation and its completed result belong to the same transaction.
+Under REPEATABLE READ a concurrent claim waits for the first transaction, then
+retries with a fresh snapshot and either replays the result or rejects a different request.
 """
 from __future__ import annotations
 
@@ -56,20 +53,26 @@ def _check_key(key: str | None) -> str:
 def claim(operation: str, actor: Principal, key: str | None, request: dict) -> str | None:
     """Return the earlier result id for a replay, None for a fresh operation."""
     key = _check_key(key)
+    digest = fingerprint(request)
+    if t.execute("""INSERT INTO motion.operation (operation, actor_id, key, fingerprint)
+                    VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (operation, actor.user_id, key, digest)):
+        return None
     row = t.sql_one("""SELECT fingerprint, result_id FROM motion.operation
                        WHERE operation=%s AND actor_id=%s AND key=%s""", (operation, actor.user_id, key))
-    if not row:
-        return None
-    if row["fingerprint"] != fingerprint(request):
+    if row["fingerprint"] != digest:
         raise Conflict("This request key was already used for a different transaction. Start a new one.",
                        details={"reason": "idempotency_key_reused"})
+    if row["result_id"] is None:
+        raise Conflict("This operation has no confirmed result. Ask a manager to reconcile it before retrying.")
     return row["result_id"]
 
 
 def complete(operation: str, actor: Principal, key: str, request: dict, *, result_type: str, result_id: Any) -> None:
-    t.execute("""INSERT INTO motion.operation (operation, actor_id, key, fingerprint, result_type, result_id)
-                 VALUES (%s,%s,%s,%s,%s,%s)""",
-              (operation, actor.user_id, key.strip(), fingerprint(request), result_type, str(result_id)))
+    updated = t.execute("""UPDATE motion.operation SET result_type=%s, result_id=%s
+                           WHERE operation=%s AND actor_id=%s AND key=%s AND fingerprint=%s AND result_id IS NULL""",
+                        (result_type, str(result_id), operation, actor.user_id, key.strip(), fingerprint(request)))
+    if updated != 1:
+        raise RuntimeError("Money operation result has no matching reservation")
 
 
 def internal_key(operation: str, actor: Principal, key: str) -> str:

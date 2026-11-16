@@ -8,9 +8,8 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-
 from conftest import ROOT, app, on_hand, pid, q, q1
+from fastapi.testclient import TestClient
 from motion_api.creds import demo_password
 
 sys.path.insert(0, str(ROOT / "branch-edge"))
@@ -161,6 +160,49 @@ def test_suspended_user_loses_offline_access_after_sync(edge, ids, login):
     with pytest.raises(service.EdgeError):
         service.login(store, "cash.nth2", demo_password("cash.nth2"), ids["register"]["NTH-T1"])
     login("hm.owner").post(f"/api/admin/users/{uid}/reactivate", {"reason": "restore"})
+
+
+def test_stock_stays_reserved_until_central_snapshot(edge, ids):
+    store, syncer, central = edge["store"], edge["syncer"], edge["central"]
+    session = _session(store, "cash.nth1", ids["register"]["NTH-T1"])
+    product = pid(ids, "Drinking water 500ml")
+    with store.connect() as conn:
+        before = service.available(store, conn, product)
+    service.sell(store, session, client_key=str(uuid.uuid4()), lines=[{"product_id": product, "quantity": "1"}],
+                 payments=[{"method": "cash", "amount": "50000"}])
+    assert syncer.push()["sent"] == 1
+    central.down = True
+    try:
+        assert not syncer.sync_once()["ok"]
+        with store.connect() as conn:
+            assert service.available(store, conn, product) == before - 1
+    finally:
+        central.down = False
+    assert syncer.sync_once()["ok"]
+    with store.connect() as conn:
+        assert service.available(store, conn, product) == before - 1
+
+
+def test_missing_offline_ack_is_retryable(edge, ids):
+    store = edge["store"]
+    session = _session(store, "cash.nth1", ids["register"]["NTH-T1"])
+    event_id = str(uuid.uuid4())
+    service.sell(store, session, client_key=event_id,
+                 lines=[{"product_id": pid(ids, "Drinking water 500ml"), "quantity": "1"}],
+                 payments=[{"method": "cash", "amount": "50000"}])
+    calls = []
+
+    def no_ack(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"acks": []})
+
+    with httpx.Client(base_url="http://local-test", transport=httpx.MockTransport(no_ack)) as client:
+        assert not service.Syncer(store, client).sync_once()["ok"]
+    assert calls == ["/api/edge/events"]
+    with store.connect() as conn:
+        row = conn.execute("SELECT status, attempts FROM outbox WHERE event_id=?", (event_id,)).fetchone()
+        assert (row["status"], row["attempts"]) == ("pending", 1)
+    assert edge["syncer"].sync_once()["ok"]
 
 
 def test_outbox_is_immutable(edge):

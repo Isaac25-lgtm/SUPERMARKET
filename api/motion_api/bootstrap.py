@@ -1,10 +1,10 @@
-"""Idempotent database bootstrap.
+"""Idempotent database bootstrap and deployment migration job.
 
     python -m motion_api.bootstrap            # migrate + activate/update Tryton modules + base setup
     python -m motion_api.bootstrap --seed-demo  # additionally load clearly-labelled TEST DATA
 
-Safe to run on every deploy (Render start command): each stage detects what
-is already done.  It never drops data.
+Run the migration job before starting client instances. Each stage detects
+previous work.
 """
 from __future__ import annotations
 
@@ -16,8 +16,10 @@ import sys
 import time
 from importlib import metadata
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import psycopg
+from psycopg import sql
 
 from . import tryton
 from .settings import Settings, get_settings
@@ -39,11 +41,12 @@ def ensure_database(settings: Settings) -> None:
     except psycopg.OperationalError as exc:
         if "does not exist" not in str(exc):
             raise
-    admin_url = target.url.rsplit("/", 1)[0] + "/postgres"
-    if "?" in target.url:
-        admin_url += "?" + target.url.split("?", 1)[1]
+    admin_url = urlsplit(target.url)._replace(path="/postgres").geturl()
     with psycopg.connect(admin_url, autocommit=True, connect_timeout=30) as conn:
-        conn.execute(f'CREATE DATABASE "{target.name}" ENCODING \'UTF8\' TEMPLATE template0')
+        try:
+            conn.execute(sql.SQL("CREATE DATABASE {} ENCODING 'UTF8' TEMPLATE template0").format(sql.Identifier(target.name)))
+        except psycopg.errors.DuplicateDatabase:
+            return
     logger.info("created database %s", target.name)
 
 
@@ -55,7 +58,7 @@ def pin_search_path(settings: Settings) -> None:
     Pinning the database default makes placement environment-independent.
     """
     with psycopg.connect(settings.database.url, autocommit=True, connect_timeout=30) as conn:
-        conn.execute(f'ALTER DATABASE "{settings.database.name}" SET search_path = public')
+        conn.execute(sql.SQL("ALTER DATABASE {} SET search_path = public").format(sql.Identifier(settings.database.name)))
 
 
 def run_migrations(settings: Settings) -> list[str]:
@@ -152,21 +155,39 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = get_settings()
+    if (args.seed_demo or args.seed_fixtures) and not settings.demo_mode:
+        raise RuntimeError("Synthetic data requires demo mode.")
     logger.info("bootstrap target host=%s db=%s env=%s", settings.database.host, settings.database.name, settings.env)
     ensure_database(settings)
-    applied = run_migrations(settings)
-    logger.info("platform migrations applied: %s", applied or "none")
-    state = init_tryton(settings, force_update=args.force_update)
-    logger.info("tryton modules: %s", state)
     from . import setup_base
 
-    setup_base.ensure(settings)
+    with psycopg.connect(settings.database.url, autocommit=True, connect_timeout=30) as guard:
+        guard.execute("SELECT pg_advisory_lock(727003)")
+        applied = run_migrations(settings)
+        logger.info("platform migrations applied: %s", applied or "none")
+        state = init_tryton(settings, force_update=args.force_update)
+        logger.info("tryton modules: %s", state)
+        setup_base.ensure(settings)
     if args.seed_demo or args.seed_fixtures:
         from . import seed
 
         seed.run(settings, activity=args.seed_demo)
     logger.info("bootstrap complete")
     return 0
+
+
+def verify_schema() -> None:
+    """Check deployment compatibility without schema owner privileges."""
+    applied = {row["version"]: row["checksum"] for row in tryton.sql(
+        "SELECT version, checksum FROM motion.schema_migration"
+    )}
+    for file in MIGRATIONS.glob("*.sql"):
+        expected = hashlib.sha256(file.read_text(encoding="utf-8").encode()).hexdigest()
+        if applied.get(file.stem) != expected:
+            raise RuntimeError(f"Run the release migration job for {file.stem} before starting the API.")
+    current = tryton.sql_one("SELECT value FROM motion.app_setting WHERE key='tryton_fingerprint'")
+    if not current or current["value"] != _module_fingerprint():
+        raise RuntimeError("Run the release migration job to update the Tryton modules.")
 
 
 if __name__ == "__main__":

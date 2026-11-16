@@ -7,7 +7,7 @@ services:
     dockerfilePath: ./Dockerfile
     region: ohio            # Neon project is in AWS us-east-2 (Ohio): keep latency ~1-2 ms
     plan: starter           # 512 MB RAM, always on. "free" works for demos but sleeps after 15 min idle
-    healthCheckPath: /healthz
+    healthCheckPath: /readyz
     autoDeploy: true
     envVars:
       - key: DATABASE_URL
@@ -17,11 +17,11 @@ services:
       # CLIENT-SAFE TEMPLATE (Codex C2): a client deployment refuses to start if any
       # demo/seed switch is on. The isolated synthetic demo service instead sets
       # MOTION_DEPLOYMENT=demo, MOTION_DEMO_MODE=1, MOTION_SEED_DEMO=1, MOTION_OPEN_DEMO=1
-      # (+ MOTION_SEED_PASSWORD_SECRET) in its own dashboard - never on client data.
+      # (+ MOTION_AUTO_BOOTSTRAP=1 and MOTION_SEED_PASSWORD_SECRET) on its own service.
       - key: MOTION_DEPLOYMENT
         value: client
       - key: MOTION_AUTO_BOOTSTRAP
-        value: "1"
+        value: "0"          # run bootstrap as a separate migration job before deploying
       - key: MOTION_DEMO_MODE
         value: "0"
       - key: MOTION_SEED_DEMO

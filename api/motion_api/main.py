@@ -79,7 +79,10 @@ def create_app() -> FastAPI:
         if os.environ.get("MOTION_AUTO_BOOTSTRAP") == "1":
             threading.Thread(target=_bootstrap_worker, name="bootstrap", daemon=True).start()
         else:
+            from .bootstrap import verify_schema
+
             t.init_pool()
+            t.run(verify_schema, readonly=True)
             STATE.update(ready=True, phase="ready")
 
     @app.middleware("http")
@@ -128,6 +131,16 @@ def create_app() -> FastAPI:
         status = 200 if STATE["ready"] else (500 if STATE["phase"] == "failed" else 200)
         return MotionJSON({"ready": STATE["ready"], "phase": STATE["phase"], "error": STATE["error"],
                            "version": __version__, "uptime_s": int(time.time() - STATE["started"])}, status_code=status)
+
+    @app.get("/readyz")
+    def readiness():
+        ready = STATE["ready"]
+        if ready:
+            try:
+                t.run(lambda: t.sql_one("SELECT 1"), readonly=True, retries=0)
+            except Exception:
+                ready = False
+        return MotionJSON({"ready": ready}, status_code=200 if ready else 503)
 
     dist: Path = settings.web_dist
     if dist.is_dir():

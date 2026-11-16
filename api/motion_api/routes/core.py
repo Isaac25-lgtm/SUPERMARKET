@@ -1,9 +1,7 @@
 """Auth, session, reference data, users & access, audit trail."""
 from __future__ import annotations
 
-import csv
 import datetime as dt
-import io
 from decimal import Decimal
 
 from fastapi import APIRouter, Query, Request
@@ -12,13 +10,11 @@ from pydantic import BaseModel, Field
 
 from .. import tryton as t
 from ..audit import record
-from ..errors import Unauthenticated
-from ..errors import NotFound
-from ..security import (CSRF_COOKIE, SESSION_COOKIE, _LoginFailed, demo_accounts, demo_login, login, logout,
-                        record_login_failure)
+from ..errors import NotFound, Unauthenticated
+from ..security import CSRF_COOKIE, SESSION_COOKIE, _LoginFailed, demo_accounts, demo_login, login, logout, record_login_failure
 from ..services import approvals, common, users
 from ..settings import get_settings
-from ..web import MotionJSON, allow_pending_password, meta_of, unit_of_work
+from ..web import MotionJSON, allow_pending_password, csv_download, meta_of, unit_of_work
 
 router = APIRouter(prefix="/api")
 
@@ -88,6 +84,21 @@ def auth_me(request: Request):
         out = p.as_public()
         out["branches"] = [b for b in common.branches() if p.can_branch(b["id"])]
         out["registers"] = [r for r in common.registers() if p.can_branch(r["branch_id"])]
+        return out
+    return MotionJSON(unit_of_work(request, allow_pending_password(fn), readonly=True))
+
+
+@router.get("/auth/access")
+def auth_access(request: Request):
+    """The signed-in account's own roles, branches and permissions in plain language."""
+    from ..permissions import access_summary
+
+    def fn(p):
+        out = access_summary(p.roles)
+        out["user"] = {"username": p.username, "full_name": p.full_name}
+        out["all_branches"] = p.all_branches
+        out["branches"] = [{"id": b["id"], "code": b["code"], "name": b["name"]}
+                           for b in common.branches() if p.can_branch(b["id"])]
         return out
     return MotionJSON(unit_of_work(request, allow_pending_password(fn), readonly=True))
 
@@ -292,24 +303,20 @@ def audit_search(request: Request, q: str | None = None, actor: int | None = Non
     return MotionJSON(unit_of_work(request, fn))
 
 
-@router.get("/audit/export.csv")
+@router.post("/audit/export.csv")
 def audit_export(request: Request, q: str | None = None, actor: int | None = None, branch: int | None = None,
                  action: str | None = None, outcome: str | None = None, date_from: dt.date | None = None,
-                 date_to: dt.date | None = None):
+                 date_to: dt.date | None = None, min_amount: Decimal | None = None):
     def fn(p):
         p.require("audit.export", action="audit.export")
-        params = _audit_params(p, q, actor, branch, action, outcome, None, None, date_from, date_to, 10000, 0)
+        params = _audit_params(p, q, actor, branch, action, outcome, None, min_amount, date_from, date_to, 10000, 0)
         rows = t.sql(AUDIT_SQL, params)
         record(actor=p, action="audit.export", reason=f"{len(rows)} rows",
                after={"filters": {k: v for k, v in params.items() if k in {"q", "actor", "branch", "action", "outcome"}}})
         return rows
-    rows = unit_of_work(request, fn, csrf=False)
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    # Data minimisation: no IPs/user agents/session refs in exports.
-    w.writerow(["at_utc", "actor", "roles", "branch", "action", "outcome", "target_type", "target_id", "amount", "reason"])
-    for r in rows:
-        w.writerow([r["at"].isoformat(), r["actor_username"], " ".join(r["actor_roles"] or []), r["branch_code"],
-                    r["action"], r["outcome"], r["target_type"], r["target_id"], r["amount"], r["reason"]])
-    return Response(buf.getvalue(), media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=audit-trail.csv"})
+    rows = unit_of_work(request, fn)
+    header = ["at_utc", "actor", "roles", "branch", "action", "outcome", "target_type", "target_id", "amount", "reason"]
+    return csv_download("audit-trail.csv", header, (
+        [r["at"].isoformat(), r["actor_username"], " ".join(r["actor_roles"] or []), r["branch_code"],
+         r["action"], r["outcome"], r["target_type"], r["target_id"], r["amount"], r["reason"]]
+        for r in rows))

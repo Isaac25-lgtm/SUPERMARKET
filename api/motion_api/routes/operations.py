@@ -1,13 +1,11 @@
 """Approvals, stock & transfers, procurement, expenses/payments, finance, dashboards, insights, edge sync."""
 from __future__ import annotations
 
-import csv
 import datetime as dt
-import io
+import logging
 from decimal import Decimal
 
 from fastapi import APIRouter, Request
-from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .. import tryton as t
@@ -15,7 +13,7 @@ from ..audit import record
 from ..errors import AppError, Invalid
 from ..security import Principal
 from ..services import ai, approvals, catalog, dashboards, finance, insights, pos, purchasing, stock, sync
-from ..web import MotionJSON, unit_of_work
+from ..web import MotionJSON, csv_download, unit_of_work
 
 router = APIRouter(prefix="/api")
 
@@ -428,7 +426,7 @@ def trial_balance(request: Request):
     return MotionJSON(unit_of_work(request, lambda p: finance.trial_balance(p)))
 
 
-@router.get("/reports/{name}.csv")
+@router.post("/reports/{name}.csv")
 def report_csv(name: str, request: Request, period: str = "month", branch_id: int | None = None):
     def fn(p: Principal):
         p.require("reports.export", action=f"reports.export.{name}")
@@ -451,13 +449,8 @@ def report_csv(name: str, request: Request, period: str = "month", branch_id: in
             raise AppError("Unknown report.")
         record(actor=p, action=f"reports.export.{name}", branch_id=branch_id, reason=f"{len(rows)} rows, period={period}")
         return head, rows
-    head, rows = unit_of_work(request, fn, csrf=False)
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(head)
-    writer.writerows(rows)
-    return Response(buf.getvalue(), media_type="text/csv",
-                    headers={"Content-Disposition": f"attachment; filename={name}.csv"})
+    head, rows = unit_of_work(request, fn)
+    return csv_download(f"{name}.csv", head, rows)
 
 
 # ------------------------------------------------------------------ dashboards & insights
@@ -559,13 +552,33 @@ class EdgeEventsIn(BaseModel):
 @router.post("/edge/events")
 def edge_events(body: EdgeEventsIn, request: Request):
     token = _device_token(request)
-    device = t.run(lambda: sync.authenticate_device(token), user=0)
+    t.run(lambda: sync.authenticate_device(token), user=0)
     acks = []
-    for ev in body.events:  # one transaction per event: a bad event cannot block the rest
+    for ev in body.events:
         try:
-            acks.append(t.run(lambda ev=ev: sync.ingest_event(device, ev), user=0))
-        except AppError as exc:
-            acks.append({"event_id": ev.get("event_id"), "status": "rejected", "error": exc.message})
-        except t.EngineError as exc:
-            acks.append({"event_id": ev.get("event_id"), "status": "rejected", "error": str(exc)})
+            eid = sync.event_uuid(ev)
+        except Invalid as exc:
+            raw_id = ev.get("event_id")
+            acks.append({"event_id": raw_id if isinstance(raw_id, str) else None, "status": "rejected", "error": exc.message})
+            continue
+        acks.append(_sync_event(token, eid, ev))
     return MotionJSON({"acks": acks})
+
+
+def _sync_event(token: str | None, eid: str, event: dict) -> dict:
+    def process(rejection: str | None = None) -> dict:
+        device = sync.authenticate_device(token, for_event=True)
+        return sync.ingest_event(device, eid, event, rejection=rejection)
+
+    try:
+        try:
+            return t.run(process, user=0, op_key="edge.sale")
+        except (AppError, t.EngineError) as exc:
+            message = exc.message if isinstance(exc, AppError) else str(exc)
+            try:
+                return t.run(lambda: process(message), user=0)
+            except AppError as rejection:
+                return {"event_id": eid, "status": "rejected", "error": rejection.message}
+    except Exception:
+        logging.getLogger(__name__).exception("Unable to process edge event %s", eid)
+        return {"event_id": eid, "status": "retry", "error": "Central could not confirm this sale. It will be retried."}

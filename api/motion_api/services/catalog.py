@@ -343,6 +343,9 @@ def update_product(actor: Principal, product_id: int, *, name: str | None = None
         if barcode:
             Identifier.create([{"product": product_id, "code": barcode,
                                 "type": "ean" if barcode.isdigit() and len(barcode) in {8, 13} else None}])
+    kg = t.model("ir.model.data").get_id("product", "uom_kilogram")
+    t.execute("""INSERT INTO motion.product_policy (product_id, sold_by_weight) VALUES (%s,%s)
+                 ON CONFLICT (product_id) DO NOTHING""", (product_id, prod.template.default_uom.id == kg))
     t.execute("""UPDATE motion.product_policy SET reorder_point=COALESCE(%s, reorder_point), reorder_qty=COALESCE(%s, reorder_qty),
                  perishable=COALESCE(%s, perishable), shelf_life_days=COALESCE(%s, shelf_life_days),
                  preferred_supplier=COALESCE(%s, preferred_supplier), updated_at=now() WHERE product_id=%s""",
@@ -373,7 +376,7 @@ def change_price(actor: Principal, product_id: int, *, new_price: Decimal, reaso
               (product_id, old["shelf_price"], new_price, reason, actor.user_id))
     record(actor=actor, action="catalog.price.change", target_type="product", target_id=product_id, reason=reason,
            before={"name": old["name"], "shelf_price": old["shelf_price"]}, after={"shelf_price": new_price})
-    return _rows(ids=[product_id])[0]
+    return _rows(ids=[product_id], active=None)[0]
 
 
 def batches_for(product_id: int, branch_ids: list[int]) -> list[dict]:

@@ -31,7 +31,7 @@
   <select id="reg"></select><br /><br />
   <input id="u" placeholder="Username" autocomplete="username" /><br /><br />
   <input id="p" type="password" placeholder="Password" autocomplete="current-password" /><br /><br />
-  <button class="primary" style="width:100%" onclick="doLogin()">Sign in</button>
+  <button class="primary" style="width:100%" id="sign-in">Sign in</button>
   <div id="lerr" class="err"></div>
 </section>
 <main id="pos" class="hidden">
@@ -44,66 +44,11 @@
     <div class="line"><span>Total</span><span class="total" id="total">0</span></div>
     <input id="cash" inputmode="numeric" placeholder="Cash received" />
     <div class="muted" id="change"></div><br />
-    <button class="primary" style="width:100%" onclick="pay()">Complete sale (offline-safe)</button>
+    <button class="primary" style="width:100%" id="complete-sale">Complete sale (offline-safe)</button>
     <div id="perr" class="err"></div>
     <div id="receipt" class="muted" style="margin-top:12px"></div>
   </div>
 </main>
-<script>
-let token = null, items = [], basket = [];
-const $ = (id) => document.getElementById(id);
-const fmt = (n) => Math.round(Number(n)).toLocaleString('en-UG');
-async function j(url, opt = {}) {
-  opt.headers = Object.assign({'Content-Type': 'application/json'}, opt.headers || {}, token ? {Authorization: 'Bearer ' + token} : {});
-  const r = await fetch(url, opt); const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.message || ('Error ' + r.status)); return d;
-}
-async function status() {
-  try { const s = await j('/edge/status'); const el = document.getElementById('sync');
-    el.textContent = s.state + (s.pending ? ` · ${s.pending} pending` : '') + (s.rejected ? ` · ${s.rejected} need review` : '');
-    el.className = 'pill ' + (s.state === 'offline' ? 'off' : s.pending ? 'pend' : 'on'); } catch (e) {}
-}
-async function init() {
-  const r = await j('/edge/registers'); document.getElementById('brand').textContent = r.brand || 'Branch till';
-  document.getElementById('branch').textContent = r.branch ? r.branch.name : 'No snapshot yet — connect once to sync';
-  if (r.test_data) document.getElementById('test').classList.remove('hidden');
-  $('reg').innerHTML = (r.registers || []).map(x => `<option value="${x.id}">${x.name}</option>`).join('');
-  status(); setInterval(status, 10000);
-}
-async function doLogin() {
-  try { const s = await j('/edge/login', {method: 'POST', body: JSON.stringify({username: $('u').value, password: $('p').value, register_id: Number($('reg').value)})});
-    token = s.token; document.getElementById('who').textContent = s.full_name; $('login').classList.add('hidden'); $('pos').classList.remove('hidden'); await load(); $('scan').focus();
-  } catch (e) { $('lerr').textContent = e.message; }
-}
-async function load() { items = (await j('/edge/catalog')).items; render(); }
-function render() {
-  const q = $('scan').value.trim().toLowerCase();
-  $('grid').innerHTML = items.filter(i => !q || i.name.toLowerCase().includes(q) || i.barcode === q || i.plu === q).slice(0, 40)
-    .map(i => `<button class="item" onclick="add(${i.id})"><b>${i.name}</b><span class="muted">${fmt(i.price)}${i.sold_by_weight ? '/kg' : ''} · ${Number(i.available)} left</span></button>`).join('');
-  const total = basket.reduce((s, l) => s + Math.round(l.q * Number(l.i.price)), 0);
-  $('basketEl').innerHTML = basket.map((l, k) => `<div class="line"><span>${l.i.name} × ${l.q}</span><span>${fmt(l.q * l.i.price)} <button onclick="basket.splice(${k},1);render()">✕</button></span></div>`).join('') || '<p class="muted">Empty</p>';
-  document.getElementById('total').textContent = 'UGX ' + fmt(total);
-  const c = Number($('cash').value || 0); $('change').textContent = c >= total && total ? 'Change: UGX ' + fmt(c - total) : '';
-  return total;
-}
-function add(id) {
-  const i = items.find(x => x.id === id); let q = 1;
-  if (i.sold_by_weight) { q = Number(prompt('Weight in kg for ' + i.name, '1')); if (!q) return; }
-  const l = basket.find(x => x.i.id === id && !i.sold_by_weight); if (l) l.q += q; else basket.push({i, q}); render();
-}
-const forms = (v) => /^\d{12}$/.test(v) ? [v, '0' + v] : /^0\d{12}$/.test(v) ? [v, v.slice(1)] : [v];
-$('scan').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const v = $('scan').value.trim(); const f = forms(v); const i = items.find(x => (x.barcodes || [x.barcode]).some(b => f.includes(b)) || x.plu === v); if (i) { add(i.id); $('scan').value = ''; } else if (v) { $('perr').textContent = 'Unknown barcode ' + v; } render(); } });
-$('scan').addEventListener('input', render); $('cash').addEventListener('input', render);
-let saleKey = crypto.randomUUID();
-async function pay() {
-  $('perr').textContent = ''; const total = render(); if (!basket.length) return;
-  try {
-    const r = await j('/edge/sales', {method: 'POST', body: JSON.stringify({client_key: saleKey, lines: basket.map(l => ({product_id: l.i.id, quantity: String(l.q)})), payments: [{method: 'cash', amount: String($('cash').value || total)}]})});
-    $('receipt').innerHTML = `<b>Receipt ${r.local_receipt_no}</b><br>Total UGX ${fmt(r.total)} · ${r.status === 'pending' ? 'saved, will sync when online' : 'synced'}`;
-    basket = []; $('cash').value = ''; saleKey = crypto.randomUUID(); await load(); status();
-  } catch (e) { $('perr').textContent = e.message; }
-}
-init();
-</script>
+<script src="/till.js" defer></script>
 </body>
 </html>

@@ -100,6 +100,9 @@ offline-capable branch tills, and evidence-linked business insights.
 **Control**
 - Users & access: create staff, grant roles and branch scope, suspend accounts (which ends their sessions
   immediately), reset passwords, sign a user out everywhere, and grant time-limited delegations.
+- **My access** (account menu, on every page including the till) shows the signed-in account's roles, branches,
+  which approvals it can sign, and every permission grouped by area, with collapsible sections. The panel is
+  informational: the server checks the same rights on every action.
 - An **append-only audit trail** with search, drill-down and CSV export (exports are themselves audited).
 - Security alerts for repeated failed logins, bursts of privilege changes, denied actions and refund frequency.
 
@@ -243,7 +246,7 @@ Environment variables, set in the Render dashboard and **never in Git**:
 |---|---|
 | `DATABASE_URL` | Neon connection string. The `-pooler` host is switched to the direct endpoint automatically (`MOTION_DB_PREFER_DIRECT=1`). |
 | `MOTION_SECRET_KEY` | ≥ 32 random characters (required in production) |
-| `MOTION_AUTO_BOOTSTRAP=1` | Run migrations, Tryton module activation and base setup on start (idempotent) |
+| `MOTION_AUTO_BOOTSTRAP` | Leave at `0` on client services. Set `1` only when the service intentionally bootstraps itself, such as the isolated demo. |
 | `MOTION_SEED_DEMO=1` / `MOTION_DEMO_MODE=1` | Generate TEST DATA in the background and show the TEST DATA banner. Set both to `0` for a real client. |
 | `MOTION_SEED_PASSWORD_SECRET` | Derives the UAT account passwords (see below) |
 | `MOTION_DEPLOYMENT` | `client` (default in production) or `demo`. A **client** deployment refuses to start if any demo/seed switch is on. The live TEST site is `demo`. |
@@ -252,9 +255,13 @@ Environment variables, set in the Render dashboard and **never in Git**:
 | `MOTION_AI_LLM_ENABLED=1` | Turns the AI chat on; it needs the key as well. Off means rule-based answers. Optional: `MOTION_AI_MODEL` (default `deepseek-flash`), `MOTION_AI_HOURLY_LIMIT` (default 30). |
 | `MOTION_SESSION_IDLE_MINUTES` | Automatic sign-out after inactivity (default **5**), enforced by both browser and server. |
 
-On start, the port binds immediately. Bootstrap runs in the background, and `/healthz` reports its phase. The app is
-usable once base setup finishes; the TEST DATA history keeps generating in the background and resumes per day if
-the container restarts.
+Before a client release, run `python -m motion_api.bootstrap` from the release image with the migration identity.
+Start Uvicorn with the restricted runtime database identity after the job succeeds. Startup verifies the applied
+SQL checksums and Tryton module fingerprint. Configure the service health check to use `/readyz`; it requires
+successful startup and a working database connection. `/healthz` exposes process and demo-bootstrap progress.
+Set Uvicorn's `FORWARDED_ALLOW_IPS` to the verified ingress addresses when the service sits behind a proxy.
+
+The isolated demo can bootstrap in the background and resume TEST DATA generation after a restart.
 
 ---
 
@@ -342,10 +349,14 @@ everything syncs when the connection returns.
 ```bash
 pip install ./branch-edge
 MOTION_EDGE_CENTRAL_URL=https://motion-supermarket.onrender.com \
-MOTION_EDGE_TOKEN=edge_...            # from System & devices → Register branch edge (shown once)
+MOTION_EDGE_TOKEN=edge_... \
 MOTION_EDGE_DB=./data/edge.sqlite3 \
-uvicorn motion_edge.app:app --host 0.0.0.0 --port 8080   # LAN only; firewall it from the internet
+uvicorn motion_edge.app:app --host 127.0.0.1 --port 8080
 ```
+
+Use the one-time token from System & devices. Put a TLS reverse proxy in front of the edge service for
+branch tills and keep the port off the public internet. Configure the proxy address Uvicorn trusts.
+Restrict the service account, SQLite database, backups, and WAL files with the host's access controls.
 
 - **Snapshot.** When online, the edge pulls a snapshot: catalog, prices, stock, registers, policy and
   **time-limited** cashier sign-in grants (default 12 h).
@@ -353,8 +364,9 @@ uvicorn motion_edge.app:app --host 0.0.0.0 --port 8080   # LAN only; firewall it
   tills are serialised by SQLite's write lock, so the last unit can't be sold twice locally.
 - **Exactly-once sync.** Events are posted centrally through the same Tryton POS workflow as online sales, with
   the original cashier and local timestamp preserved.
-- **Conflicts are logged for review**, never discarded: oversell, price changed during the outage, unverified
-  mobile money, or a cashier suspended in the meantime.
+- **Conflicts and permanent rejects are retained.** A missing acknowledgement or temporary central error leaves
+  the receipt pending. A posted receipt stays reserved locally until a fresh central snapshot reflects it.
+  Rejected receipts need finance review and continue to reserve the goods recorded as sold.
 - **Not yet tested on hardware**: thermal printers, cash drawers, UPS/power loss, real multi-site LANs. The edge
   till page is deliberately minimal (see [Status](#status)).
 

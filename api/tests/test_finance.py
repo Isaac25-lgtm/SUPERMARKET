@@ -61,7 +61,9 @@ def test_branch_manager_sees_only_own_branch_pnl(login, ids):
 
 
 def test_export_is_audited(login):
-    r = login("acc.amina").get("/api/reports/pnl.csv", period="month")
+    acc = login("acc.amina")
+    assert acc.c.post("/api/reports/pnl.csv?period=month").status_code == 403
+    r = acc.post("/api/reports/pnl.csv?period=month", {})
     assert r.status_code == 200 and r.text.startswith("branch,")
     assert q("SELECT 1 FROM motion.audit_event WHERE action='reports.export.pnl' AND actor_username='acc.amina'")
 

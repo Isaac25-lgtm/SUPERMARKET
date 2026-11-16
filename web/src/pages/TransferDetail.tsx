@@ -21,7 +21,14 @@ export default function TransferDetailPage() {
   const refresh = () => { qc.invalidateQueries({ queryKey: ['transfer', id] }); qc.invalidateQueries({ queryKey: ['transfers'] }) }
   const dispatch = useMutation({ mutationFn: () => api.post(`/api/transfers/${id}/dispatch`, {}), onSuccess: () => { toast('good', 'Dispatched — stock is now in transit.'); refresh() } })
   const receive = useMutation({
-    mutationFn: () => api.post(`/api/transfers/${id}/receive`, { note: note || null, lines: q.data!.lines.filter((l: R) => num(l.dispatched_qty) > 0).map((l: R) => ({ product_id: l.product_id, received_qty: counts[l.product_id]?.received ?? l.dispatched_qty, damaged_qty: counts[l.product_id]?.damaged || '0' })) }),
+    mutationFn: () => api.post(`/api/transfers/${id}/receive`, {
+      note: note || null,
+      lines: q.data!.lines.filter((line: R) => num(line.dispatched_qty) > 0).map((line: R) => ({
+        product_id: line.product_id,
+        received_qty: counts[line.product_id]?.received,
+        damaged_qty: counts[line.product_id]?.damaged || '0',
+      })),
+    }),
     onSuccess: () => { toast('good', 'Receipt confirmed.'); refresh() },
   })
   if (q.isLoading) return <LoadingBlock rows={6} />
@@ -29,6 +36,8 @@ export default function TransferDetailPage() {
   const t = q.data!
   const inFrom = me?.branches.some((b) => b.id === t.from_branch_id) || me?.all_branches
   const inTo = me?.branches.some((b) => b.id === t.to_branch_id) || me?.all_branches
+  const allCounted = t.lines.filter((line: R) => num(line.dispatched_qty) > 0)
+    .every((line: R) => !!counts[line.product_id]?.received.trim())
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader title={`Transfer ${t.ref}`} subtitle={`${t.from_branch} → ${t.to_branch} · ${t.reason ?? ''}`} actions={<StatusChip status={t.status} />} />
@@ -49,10 +58,10 @@ export default function TransferDetailPage() {
           {t.status === 'dispatched' && can('transfer.receive') && inTo && (
             <Card className="space-y-3 p-5">
               <div className="font-semibold">Confirm what arrived</div>
-              <p className="text-[13px] text-muted">Enter the good units counted and any damaged units. Anything not accounted for stays in transit as an open discrepancy — it is never silently deleted.</p>
+              <p className="text-[13px] text-muted">Enter a count for every dispatched product. Enter zero if none arrived. Missing units stay in transit as a discrepancy.</p>
               <Field label="Note" htmlFor="rn"><Input id="rn" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. 2 cartons crushed" /></Field>
               <ErrorBox error={receive.error} />
-              <Button variant="primary" icon={<PackageCheck className="size-4" />} loading={receive.isPending} onClick={() => receive.mutate()}>Confirm receipt</Button>
+              <Button variant="primary" icon={<PackageCheck className="size-4" />} disabled={!allCounted} loading={receive.isPending} onClick={() => receive.mutate()}>Confirm receipt</Button>
             </Card>
           )}
           {t.discrepancies.length > 0 && (

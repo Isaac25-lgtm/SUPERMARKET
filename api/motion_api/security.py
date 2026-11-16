@@ -76,6 +76,7 @@ class Principal:
     tryton_employee_id: int | None
     must_change_password: bool
     session_hash: str | None = None
+    session_touch_due: bool = False
     meta: RequestMeta = field(default_factory=RequestMeta)
 
     def has(self, perm: str) -> bool:
@@ -148,10 +149,15 @@ def authenticate_session(token: str | None, meta: RequestMeta) -> Principal:
         raise Unauthenticated("Demo access has ended. Please sign in.")
     if row["last_seen_at"] + timedelta(minutes=settings.session_idle_minutes) <= now:
         raise Unauthenticated("Signed out after inactivity. Please sign in again.")
-    if now - row["last_seen_at"] > timedelta(seconds=60):
-        t.execute("UPDATE motion.session SET last_seen_at=now() WHERE id_hash=%s", (id_hash,))
     meta.session_ref = id_hash[:12]
-    return load_principal(row["user_id"], session_hash=id_hash, meta=meta)
+    principal = load_principal(row["user_id"], session_hash=id_hash, meta=meta)
+    principal.session_touch_due = now - row["last_seen_at"] > timedelta(seconds=60)
+    return principal
+
+
+def touch_session(session_hash: str) -> None:
+    t.execute("""UPDATE motion.session SET last_seen_at=now() WHERE id_hash=%s AND revoked_at IS NULL
+                 AND expires_at>now() AND last_seen_at<now()-interval '60 seconds'""", (session_hash,))
 
 
 def check_csrf(principal: Principal, header_token: str | None, cookie_token: str | None) -> None:
@@ -170,9 +176,7 @@ class LoginResult:
     expires_at: datetime
 
 
-def login(username: str, password: str, meta: RequestMeta) -> LoginResult:
-    """Verify credentials and open a session (runs inside a transaction)."""
-    settings = get_settings()
+def verify_credentials(username: str, password: str, meta: RequestMeta, *, action: str = "auth.login") -> dict:
     uname = (username or "").strip().lower()
     recent_ip_failures = t.sql_one(
         "SELECT count(*) AS n FROM motion.login_attempt WHERE ip=%s AND NOT success AND at > now() - interval '15 minutes'",
@@ -180,25 +184,30 @@ def login(username: str, password: str, meta: RequestMeta) -> LoginResult:
     if recent_ip_failures >= 30:
         raise RateLimited("Too many failed sign-in attempts from this network. Try again later.")
     row = t.sql_one("SELECT * FROM motion.app_user WHERE lower(username)=%s", (uname,))
-    now = utcnow()
-    if row and row["locked_until"] and row["locked_until"] > now:
-        verify_password(None, password)
-        raise _LoginFailed(uname, "locked", row["id"], "Account temporarily locked after repeated failures.")
+    if row and row["locked_until"] and row["locked_until"] > utcnow():
+        raise _LoginFailed(uname, "locked", row["id"], "Account temporarily locked after repeated failures.", action)
     ok = verify_password(row["password_hash"] if row else None, password)
     if not row or not ok:
         # The failure counter is updated by record_login_failure() in its own
         # transaction: this one rolls back when the exception propagates.
-        raise _LoginFailed(uname, "bad_credentials", row["id"] if row else None, "Incorrect username or password.")
+        raise _LoginFailed(uname, "bad_credentials", row["id"] if row else None, "Incorrect username or password.", action)
     if row["status"] != "active":
-        raise _LoginFailed(uname, "suspended", row["id"], "This account is suspended. Contact your manager.")
+        raise _LoginFailed(uname, "suspended", row["id"], "This account is suspended. Contact your manager.", action)
+    return row
+
+
+def login(username: str, password: str, meta: RequestMeta) -> LoginResult:
+    """Verify credentials and open a session (runs inside a transaction)."""
+    row = verify_credentials(username, password, meta)
+    settings = get_settings()
     token = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(24)
-    expires = now + timedelta(minutes=settings.session_ttl_minutes)
+    expires = utcnow() + timedelta(minutes=settings.session_ttl_minutes)
     t.execute(
         "INSERT INTO motion.session (id_hash, user_id, csrf_hash, expires_at, ip, user_agent) VALUES (%s,%s,%s,%s,%s,%s)",
         (sha256(token), row["id"], sha256(csrf), expires, meta.ip, (meta.user_agent or "")[:300]))
     t.execute("UPDATE motion.app_user SET failed_logins=0, locked_until=NULL, last_login_at=now() WHERE id=%s", (row["id"],))
-    t.execute("INSERT INTO motion.login_attempt (username, ip, success) VALUES (%s,%s,true)", (uname, meta.ip))
+    t.execute("INSERT INTO motion.login_attempt (username, ip, success) VALUES (%s,%s,true)", (row["username"], meta.ip))
     meta.session_ref = sha256(token)[:12]
     principal = load_principal(row["id"], session_hash=sha256(token), meta=meta)
     record(actor=principal, action="auth.login", target_type="user", target_id=row["id"])
@@ -241,11 +250,12 @@ def demo_login(username: str, meta: RequestMeta) -> LoginResult:
 
 
 class _LoginFailed(Unauthenticated):
-    def __init__(self, username: str, reason: str, user_id: int | None, message: str):
+    def __init__(self, username: str, reason: str, user_id: int | None, message: str, action: str = "auth.login"):
         super().__init__(message)
         self.username = username
         self.reason = reason
         self.user_id = user_id
+        self.action = action
 
 
 def record_login_failure(exc: _LoginFailed, meta: RequestMeta) -> None:
@@ -263,7 +273,7 @@ def record_login_failure(exc: _LoginFailed, meta: RequestMeta) -> None:
                           (settings.login_lock_minutes, exc.user_id))
             else:
                 t.execute("UPDATE motion.app_user SET failed_logins=%s WHERE id=%s", (failures, exc.user_id))
-        record(action="auth.login", outcome="denied", target_type="user", target_id=exc.user_id,
+        record(action=exc.action, outcome="denied", target_type="user", target_id=exc.user_id,
                reason=f"{exc.reason}: {exc.username}", meta=meta)
     t.run(work, user=0)
 

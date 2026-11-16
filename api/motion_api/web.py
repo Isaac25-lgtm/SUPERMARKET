@@ -1,7 +1,9 @@
 """HTTP plumbing shared by routers: request meta, unit-of-work, JSON encoding."""
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
 import json
 import logging
 import uuid
@@ -15,7 +17,17 @@ from fastapi.responses import JSONResponse, Response
 from . import tryton as t
 from .audit import RequestMeta
 from .errors import AppError, Forbidden
-from .security import CSRF_COOKIE, SESSION_COOKIE, Principal, audit_denied, authenticate_session, check_csrf
+from .security import (
+    CSRF_COOKIE,
+    SESSION_COOKIE,
+    Principal,
+    _LoginFailed,
+    audit_denied,
+    authenticate_session,
+    check_csrf,
+    record_login_failure,
+    touch_session,
+)
 
 logger = logging.getLogger("motion.web")
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
@@ -39,10 +51,24 @@ class MotionJSON(JSONResponse):
 
 
 def meta_of(request: Request) -> RequestMeta:
-    fwd = request.headers.get("x-forwarded-for")
-    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else None)
+    ip = request.client.host if request.client else None
     return RequestMeta(request_id=request.state.request_id if hasattr(request.state, "request_id") else None,
                        ip=ip, user_agent=request.headers.get("user-agent"))
+
+
+def csv_download(filename: str, header: list[str], rows) -> Response:
+    def cell(value):
+        if isinstance(value, str) and (value[:1] in {"\t", "\r", "\n"}
+                                      or value.lstrip().startswith(("=", "+", "-", "@", "＝", "＋", "－", "＠"))):
+            return "'" + value
+        return value
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(header)
+    writer.writerows([cell(value) for value in row] for row in rows)
+    return Response(buffer.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
 def unit_of_work(request: Request, fn: Callable[[Principal], Any], *, readonly: bool = False,
@@ -64,13 +90,23 @@ def unit_of_work(request: Request, fn: Callable[[Principal], Any], *, readonly: 
         return fn(principal)
 
     try:
-        # Session touch writes, so even GETs run read-write; business reads stay side-effect free.
         route = request.scope.get("route")
-        op_key = f"{request.method} {getattr(route, 'path', request.url.path)}"
-        return t.run(work, user=0, readonly=False, op_key=op_key)
+        op_key = f"{request.method} {route.path}" if hasattr(route, "path") else None
+        result = t.run(work, user=0, readonly=readonly, op_key=op_key)
+    except _LoginFailed as exc:
+        record_login_failure(exc, meta)
+        raise Forbidden("Manager credentials were not accepted.", action=exc.action) from None
     except Forbidden as exc:
         audit_denied(exc, holder["p"], meta)
         raise
+    principal = holder["p"]
+    if principal and principal.session_touch_due and principal.session_hash:
+        session_hash = principal.session_hash
+        try:
+            t.run(lambda: touch_session(session_hash), retries=2)
+        except Exception:
+            logger.warning("Could not refresh session activity for request %s", meta.request_id)
+    return result
 
 
 def allow_pending_password(fn):

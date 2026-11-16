@@ -20,11 +20,15 @@ from __future__ import annotations
 import datetime as dt
 import json
 import secrets
+import uuid
 from decimal import Decimal
+from typing import Literal
+
+from pydantic import AwareDatetime, BaseModel, Field, ValidationError
 
 from .. import tryton as t
 from ..audit import RequestMeta, record
-from ..errors import Forbidden, Invalid, NotFound, Unauthenticated
+from ..errors import Conflict, Forbidden, Invalid, NotFound, Unauthenticated
 from ..security import Principal, sha256, utcnow
 from ..settings import get_settings
 from . import catalog, common, pos
@@ -63,13 +67,15 @@ def list_devices(actor: Principal) -> list[dict]:
     return [r for r in rows if actor.can_branch(r["branch_id"])]
 
 
-def authenticate_device(token: str | None) -> dict:
+def authenticate_device(token: str | None, *, for_event: bool = False) -> dict:
     if not token or not token.startswith("edge_"):
         raise Unauthenticated("Edge device token required.")
-    row = t.sql_one("SELECT * FROM motion.edge_device WHERE token_hash=%s", (sha256(token),))
+    locking = " FOR SHARE" if for_event else ""
+    row = t.sql_one("SELECT * FROM motion.edge_device WHERE token_hash=%s" + locking, (sha256(token),))
     if not row or row["revoked_at"]:
         raise Unauthenticated("Edge device is not registered or was revoked.")
-    t.execute("UPDATE motion.edge_device SET last_seen_at=now() WHERE id=%s", (row["id"],))
+    if not for_event:
+        t.execute("UPDATE motion.edge_device SET last_seen_at=now() WHERE id=%s", (row["id"],))
     return row
 
 
@@ -83,7 +89,7 @@ def snapshot(device: dict) -> dict:
                             array_agg(DISTINCT r.role_code) AS roles
                      FROM motion.app_user u JOIN motion.user_role r ON r.user_id=u.id
                      LEFT JOIN motion.user_branch ub ON ub.user_id=u.id
-                     WHERE u.status='active' AND r.role_code IN ('cashier','branch_manager')
+                      WHERE u.status='active' AND NOT u.must_change_password AND r.role_code IN ('cashier','branch_manager')
                        AND (u.all_branches OR ub.branch_id=%s)
                      GROUP BY 1,2,3""", (b["id"],))
     return {
@@ -100,8 +106,33 @@ def snapshot(device: dict) -> dict:
     }
 
 
-def _ingest_sale(device: dict, event: dict) -> dict:
-    p = event["payload"]
+class OfflineLine(BaseModel):
+    product_id: int = Field(gt=0)
+    quantity: Decimal = Field(gt=0, max_digits=15, decimal_places=3)
+    unit_price: Decimal = Field(ge=0, max_digits=14, decimal_places=0)
+    list_price: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=0)
+    discount_pct: Decimal = Field(default=Decimal(0), ge=0, le=100, decimal_places=4)
+
+
+class OfflinePayment(BaseModel):
+    method: Literal["cash", "mobile_money", "card"]
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=0)
+    reference: str | None = Field(default=None, max_length=120)
+
+
+class OfflineSale(BaseModel):
+    register_id: int = Field(gt=0)
+    cashier_username: str = Field(min_length=1, max_length=32)
+    local_created_at: AwareDatetime
+    local_receipt_no: str = Field(min_length=1, max_length=120)
+    lines: list[OfflineLine] = Field(min_length=1, max_length=200)
+    payments: list[OfflinePayment] = Field(max_length=6)
+    price_version: str | None = Field(default=None, max_length=120)
+    total: Decimal = Field(ge=0, max_digits=14, decimal_places=0)
+
+
+def _ingest_sale(device: dict, event_id: str, sale: OfflineSale) -> dict:
+    p = sale.model_dump()
     reg = common.register(int(p["register_id"]))
     if reg["branch_id"] != device["branch_id"]:
         raise Forbidden("Register belongs to another branch.", action="sync.sale.wrong_branch",
@@ -115,6 +146,9 @@ def _ingest_sale(device: dict, event: dict) -> dict:
     roles = {r["role_code"] for r in t.sql("SELECT role_code FROM motion.user_role WHERE user_id=%s", (user["id"],))}
     if not roles & {"cashier", "branch_manager"}:
         conflicts.append({"type": "cashier_role_missing_at_sync", "username": user["username"]})
+    if not user["all_branches"] and not t.sql_one("SELECT 1 FROM motion.user_branch WHERE user_id=%s AND branch_id=%s",
+                                                 (user["id"], device["branch_id"])):
+        conflicts.append({"type": "cashier_branch_missing_at_sync", "username": user["username"]})
     items = {i["id"]: i for i in catalog._rows(ids=[int(x["product_id"]) for x in p["lines"]], active=None)}
     lines = []
     for x in p["lines"]:
@@ -122,7 +156,13 @@ def _ingest_sale(device: dict, event: dict) -> dict:
         if pid not in items:
             raise Invalid(f"Unknown product {pid} on offline sale.")
         charged = common.money(x["unit_price"])
-        list_price = common.money(x.get("list_price") or charged)
+        list_price = charged if x["list_price"] is None else common.money(x["list_price"])
+        if not items[pid]["sold_by_weight"] and x["quantity"] != x["quantity"].to_integral_value():
+            raise Invalid("Unit goods must have a whole quantity.")
+        if charged != common.money(list_price * (100 - x["discount_pct"]) / 100):
+            raise Invalid("The recorded price and discount disagree.")
+        if x["discount_pct"] > Decimal(str(pos.pos_policy().get("cashier_max_discount_pct", 0))):
+            conflicts.append({"type": "discount_policy_divergence", "product_id": pid})
         if items[pid]["shelf_price"] is not None and list_price != items[pid]["shelf_price"]:
             conflicts.append({"type": "price_version_divergence", "product_id": pid, "offline_price": str(list_price),
                               "central_price": str(items[pid]["shelf_price"]), "edge_price_version": p.get("price_version")})
@@ -130,11 +170,18 @@ def _ingest_sale(device: dict, event: dict) -> dict:
                       "list_gross": list_price, "discount_pct": Decimal(str(x.get("discount_pct") or 0))})
     payments = [{"method": x["method"], "amount": common.money(x["amount"]), "reference": x.get("reference"),
                  "offline": True} for x in p["payments"]]
-    local_at = dt.datetime.fromisoformat(p["local_created_at"])
+    if any(x["method"] != "cash" and not (x["reference"] or "").strip() for x in payments):
+        raise Invalid("A non-cash tender needs a transaction reference.")
+    basket_total = sum((common.line_amount(x["quantity"], x["unit_gross"]) for x in lines), Decimal(0))
+    if basket_total != sale.total or basket_total != sum((x["amount"] for x in payments), Decimal(0)):
+        raise Invalid("The recorded basket and payments do not balance.")
+    local_at = sale.local_created_at
+    if local_at > utcnow() + dt.timedelta(minutes=5):
+        raise Invalid("The sale time is ahead of the central clock. Check the branch device clock.")
     sale_date = local_at.astimezone(common.local_tz()).date()
     cashier = {"id": user["id"], "tryton_user_id": user["tryton_user_id"], "tryton_employee_id": user["tryton_employee_id"]}
     result = pos.post_sale(register=reg, cashier=cashier, lines=lines, payments=payments, sale_date=sale_date,
-                           idempotency_key=f"edge:{event['event_id']}", source="edge", shift_id=None,
+                           idempotency_key=f"edge:{event_id}", source="edge", shift_id=None,
                            enforce_stock=False, edge_device_id=device["id"], local_created_at=local_at)
     conflicts += [{"type": "oversold", **{k: str(v) for k, v in c.items()}} for c in result.get("stock_conflicts", [])]
     for c in conflicts:
@@ -144,29 +191,46 @@ def _ingest_sale(device: dict, event: dict) -> dict:
                       (reg["branch_id"], str(result["id"]), c.get("product_id"), json.dumps(c)))
     record(action="sync.sale.posted", target_type="pos_sale", target_id=result["number"], branch_id=reg["branch_id"],
            amount=result["total"], reason=f"offline sale by {user['username']} on {reg['name']}",
-           after={"event_id": event["event_id"], "local_receipt": p.get("local_receipt_no"), "conflicts": len(conflicts),
+           after={"event_id": event_id, "local_receipt": p["local_receipt_no"], "conflicts": len(conflicts),
                   "local_created_at": p["local_created_at"]},
            meta=RequestMeta(request_id=f"edge-{device['id']}"))
     return {"status": "posted_with_conflict" if conflicts else "posted", "central_number": result["number"],
             "pos_sale_id": result["id"], "conflicts": conflicts, "replayed": result.get("replayed", False)}
 
 
-def ingest_event(device: dict, event: dict) -> dict:
-    """Process one event idempotently. Runs inside its own transaction."""
-    eid = str(event.get("event_id") or "")
-    if len(eid) < 32:
-        raise Invalid("event_id (UUID) required.")
-    prev = t.sql_one("SELECT status, result FROM motion.sync_inbox WHERE event_id=%s::uuid", (eid,))
-    if prev:
+def event_uuid(event: dict) -> str:
+    try:
+        return str(uuid.UUID(str(event.get("event_id", ""))))
+    except ValueError:
+        raise Invalid("The edge event needs a valid UUID.") from None
+
+
+def ingest_event(device: dict, eid: str, event: dict, *, rejection: str | None = None) -> dict:
+    """Record one stable outcome per immutable event, in its own transaction."""
+    kind = event["kind"] if isinstance(event.get("kind"), str) else ""
+    payload = event.get("payload")
+    encoded = json.dumps(payload, allow_nan=False)
+    claimed = t.execute("""INSERT INTO motion.sync_inbox (edge_device_id, event_id, kind, payload, status)
+                            VALUES (%s,%s,%s,%s::jsonb,'rejected') ON CONFLICT DO NOTHING""",
+                         (device["id"], eid, kind, encoded))
+    if not claimed:
+        prev = t.sql_one("SELECT * FROM motion.sync_inbox WHERE event_id=%s", (eid,))
+        if prev["edge_device_id"] != device["id"] or prev["kind"] != kind or prev["payload"] != payload:
+            raise Conflict("This event identifier does not match its original submission.")
         return {"event_id": eid, **prev["result"], "duplicate": True}
-    if event.get("kind") != "sale":
-        raise Invalid("Unsupported event kind.")
-    result = _ingest_sale(device, event)
-    t.execute("""INSERT INTO motion.sync_inbox (edge_device_id, event_id, kind, payload, status, result)
-                 VALUES (%s,%s::uuid,%s,%s::jsonb,%s,%s::jsonb)""",
-              (device["id"], eid, event["kind"], json.dumps(event["payload"], default=str), result["status"],
-               json.dumps(result, default=str)))
-    return {"event_id": eid, **json.loads(json.dumps(result, default=str)), "duplicate": False}
+    if rejection is None:
+        if kind != "sale":
+            raise Invalid("Unsupported offline event kind.")
+        try:
+            sale = OfflineSale.model_validate(payload)
+        except ValidationError:
+            raise Invalid("The offline sale has invalid or missing fields.") from None
+        result = _ingest_sale(device, eid, sale)
+    else:
+        result = {"status": "rejected", "error": rejection}
+    t.execute("UPDATE motion.sync_inbox SET status=%s, result=%s::jsonb WHERE event_id=%s",
+              (result["status"], json.dumps(result, default=str), eid))
+    return {"event_id": eid, **result, "duplicate": False}
 
 
 def sync_status(actor: Principal) -> dict:

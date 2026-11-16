@@ -24,7 +24,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
-from typing import Any, TypeVar
+from typing import Any
 
 os.environ.setdefault("TRYTOND_APPNAME", "motion-api")
 os.environ.setdefault("TRYTOND_TZ", "UTC")
@@ -39,7 +39,6 @@ from trytond.config import config  # noqa: E402
 from .settings import Settings  # noqa: E402
 
 logger = logging.getLogger(__name__)
-T = TypeVar("T")
 
 MODULES = [
     "company", "currency", "country", "party", "product", "stock",
@@ -53,7 +52,8 @@ _db_name: str | None = None
 _pool_ready = False
 # Lock requirements learned per operation (see run()): avoids paying Tryton's
 # lock-escalation restart on every call of e.g. checkout (strict sequences).
-_learned_extras: dict[str, dict[str, Any]] = {}
+_learned_tables: dict[str, set[str]] = {}
+_learned_lock = threading.Lock()
 
 
 class EngineError(Exception):
@@ -129,7 +129,7 @@ def _is_retryable(exc: BaseException) -> bool:
     return isinstance(exc, backend.DatabaseOperationalError)
 
 
-def run(
+def run[T](
     fn: Callable[[], T],
     *,
     user: int = 0,
@@ -140,17 +140,17 @@ def run(
 ) -> T:
     """Execute ``fn`` inside a Tryton transaction, retrying on serialization.
 
-    ``op_key`` names the operation so table/record locks Tryton asked for on a
-    previous call are taken up-front next time (no restart).
+    ``op_key`` names the operation so stable table locks Tryton required on a
+    previous call can be acquired up-front. Record IDs stay local to this call.
     """
-    import copy
-
     from trytond.exceptions import UserError, UserWarning
     from trytond.transaction import Transaction, TransactionError
 
     init_pool()
     attempt = 0
-    extras: dict[str, Any] = copy.deepcopy(_learned_extras.get(op_key, {})) if op_key else {}
+    with _learned_lock:
+        tables = sorted(_learned_tables.get(op_key, ())) if op_key else []
+    extras: dict[str, Any] = {"_lock_tables": tables} if tables else {}
     while True:
         try:
             if "company" not in _default_context:
@@ -162,14 +162,9 @@ def run(
             # Tryton's lock-escalation protocol: restart with the table/records
             # locked from the beginning (same as trytond's RPC dispatcher).
             exc.fix(extras)
-            if op_key:
-                learned = _learned_extras.setdefault(op_key, {})
-                for table in extras.get("_lock_tables", []):
-                    if table not in learned.setdefault("_lock_tables", []):
-                        learned["_lock_tables"].append(table)
-                for table, ids in extras.get("_lock_records", {}).items():
-                    known = learned.setdefault("_lock_records", {}).setdefault(table, [])
-                    known.extend(i for i in ids if i not in known)  # Tryton extends lists
+            if op_key and extras.get("_lock_tables"):
+                with _learned_lock:
+                    _learned_tables.setdefault(op_key, set()).update(extras["_lock_tables"])
             attempt += 1
             if attempt > retries + 4:
                 raise
@@ -219,7 +214,7 @@ def sql(query: str, params: Sequence[Any] | dict[str, Any] | None = None) -> lis
     if cur.description is None:
         return []
     cols = [c.name for c in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
 
 def sql_one(query: str, params: Sequence[Any] | dict[str, Any] | None = None) -> dict[str, Any] | None:

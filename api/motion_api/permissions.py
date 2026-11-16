@@ -155,6 +155,51 @@ def permissions_for(roles: set[str] | list[str]) -> set[str]:
     return out
 
 
+# Areas for the "My access" view: (label, permission-code prefixes), in display order.
+AREAS: list[tuple[str, tuple[str, ...]]] = [
+    ("Dashboards", ("dashboard.",)),
+    ("Point of sale & shifts", ("pos.",)),
+    ("Products & prices", ("catalog.",)),
+    ("Stock & transfers", ("stock.", "transfer.")),
+    ("Procurement", ("procurement.",)),
+    ("Payables & expenses", ("expense.", "invoice.", "payment.")),
+    ("Finance & reports", ("finance.", "reports.")),
+    ("Approvals", ("approvals.",)),
+    ("Ask Motion AI & alerts", ("insights.",)),
+    ("Administration & audit", ("admin.", "audit.")),
+    ("Technical", ("sync.", "system.")),
+]
+
+ACTION_LABELS: dict[str, str] = {
+    "purchase_request": "Purchase requisitions",
+    "expense": "Expense claims",
+    "supplier_payment": "Supplier payments",
+    "transfer": "Inter-branch transfers",
+    "refund": "Refunds",
+    "stock_writeoff": "Stock write-offs",
+    "price_override": "Till discounts and price overrides",
+}
+assert set(ACTION_LABELS) == ACTION_TYPES
+
+
+def access_summary(roles: set[str] | list[str]) -> dict:
+    """Human-readable roles, permissions by area and approval authority for one account."""
+    roles = set(roles)
+    granted = permissions_for(roles)
+    areas = []
+    for label, prefixes in AREAS:
+        codes = [c for c in PERMISSIONS if c.startswith(prefixes)]
+        areas.append({"area": label, "granted": sum(c in granted for c in codes), "total": len(codes),
+                      "permissions": [{"code": c, "label": PERMISSIONS[c], "granted": c in granted} for c in codes]})
+    assert sum(a["total"] for a in areas) == len(PERMISSIONS), "every permission belongs to an area"
+    return {
+        "roles": [{"code": r.code, "name": r.name, "description": r.description} for r in ROLES if r.code in roles],
+        "areas": areas,
+        "granted": len(granted), "total": len(PERMISSIONS),
+        "can_approve": [ACTION_LABELS[a] for a in ACTION_LABELS if APPROVER_ROLES[a] & roles],
+    }
+
+
 def markdown() -> str:
     roles = [r.code for r in ROLES]
     head = "| Permission | " + " | ".join(roles) + " |"

@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ClipboardList, Download, PackagePlus, Search } from 'lucide-react'
+import { ClipboardList, PackagePlus, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/auth'
+import { CsvButton } from '../components/CsvButton'
 import {
   Badge, Button, Card, Empty, ErrorBox, Field, Input, Kpi, LoadingBlock, Modal, PageHeader, Select, StatusChip, Table, Tabs,
   Td, Textarea, Th, useToast,
@@ -25,7 +26,7 @@ export default function StockPage() {
       <PageHeader title="Stock & products" subtitle="Quantities come from completed stock movements in the ledger engine — not editable by hand."
         actions={<>
           {can('stock.count') && <Button icon={<ClipboardList className="size-4" />} onClick={() => setCounting(true)}>Record count</Button>}
-          {can('reports.export') && <a href={api.url('/api/reports/stock.csv', { branch_id: branchId })}><Button icon={<Download className="size-4" />}>Export CSV</Button></a>}
+          {can('reports.export') && <CsvButton path="/api/reports/stock.csv" filename="stock.csv" query={{ branch_id: branchId }} />}
           {can('catalog.manage') && <Button variant="primary" icon={<PackagePlus className="size-4" />} onClick={() => setCreating(true)}>New product</Button>}
         </>} />
       {overview.data && (

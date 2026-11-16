@@ -23,11 +23,16 @@ METHOD = "rules-v1"
 ZERO = Decimal(0)
 
 
-def _sales_qty(days: int) -> dict[tuple[int, int], Decimal]:
-    rows = t.sql("""SELECT s.branch_id, l.product_id, sum(l.quantity) AS q FROM motion.pos_sale_line l
-                    JOIN motion.pos_sale s ON s.id=l.pos_sale_id WHERE s.sale_date > %s GROUP BY 1,2""",
-                 (common.today() - dt.timedelta(days=days),))
-    return {(r["branch_id"], r["product_id"]): Decimal(r["q"]) for r in rows}
+def _sales_quantities(branch_ids: list[int], today: dt.date) -> dict[tuple[int, int], dict]:
+    rows = t.sql("""SELECT s.branch_id, l.product_id,
+                           COALESCE(sum(l.quantity) FILTER (WHERE s.sale_date>%s), 0) AS q14,
+                           COALESCE(sum(l.quantity) FILTER (WHERE s.sale_date>%s), 0) AS q30,
+                           sum(l.quantity) AS q60
+                    FROM motion.pos_sale_line l JOIN motion.pos_sale s ON s.id=l.pos_sale_id
+                    WHERE s.branch_id=ANY(%s) AND s.sale_date>%s AND s.sale_date<=%s GROUP BY 1,2""",
+                 (today - dt.timedelta(days=14), today - dt.timedelta(days=30), branch_ids,
+                  today - dt.timedelta(days=60), today))
+    return {(r["branch_id"], r["product_id"]): r for r in rows}
 
 
 def _ins(key, kind, severity, title, detail, evidence, branch=None, action=None, confidence="medium"):
@@ -38,21 +43,27 @@ def _ins(key, kind, severity, title, detail, evidence, branch=None, action=None,
 
 def generate(actor: Principal, branch_id: int | None = None) -> list[dict]:
     actor.require("insights.view", action="insights.view")
-    branches = [b for b in common.branches() if actor.can_branch(b["id"]) and (branch_id is None or b["id"] == branch_id)]
+    visible = [b for b in common.branches() if actor.can_branch(b["id"])]
+    branches = [b for b in visible if branch_id is None or b["id"] == branch_id]
     if branch_id is not None and not branches:
         actor.require_branch(branch_id, action="insights.view")
     items = {r["id"]: r for r in catalog._rows()}
     policy = {r["product_id"]: r for r in t.sql("SELECT * FROM motion.product_policy")}
-    on_hand = common.stock_on_hand([b["storage_location_id"] for b in common.branches()])
-    s14, s30, s60 = _sales_qty(14), _sales_qty(30), _sales_qty(60)
-    first_sale = t.sql_one("SELECT min(sale_date) AS d FROM motion.pos_sale")["d"]
-    history_days = (common.today() - first_sale).days if first_sale else 0
+    on_hand = common.stock_on_hand([b["storage_location_id"] for b in visible])
+    today = common.today()
+    visible_ids = [b["id"] for b in visible]
+    quantities = _sales_quantities(visible_ids, today)
+    history_days = {r["branch_id"]: (today - r["first_sale"]).days for r in t.sql(
+        "SELECT branch_id, min(sale_date) AS first_sale FROM motion.pos_sale "
+        "WHERE branch_id=ANY(%s) AND sale_date<=%s GROUP BY branch_id", (visible_ids, today)
+    )}
     out: list[dict] = []
-    all_br = common.branches()
     for b in branches:
+        history = history_days.get(b["id"], 0)
         for pid, it in items.items():
             stock = on_hand.get((b["storage_location_id"], pid), ZERO)
-            vel = (s14.get((b["id"], pid), ZERO) / 14)
+            sales = quantities.get((b["id"], pid), {})
+            vel = sales.get("q14", ZERO) / 14
             lead = Decimal(policy.get(pid, {}).get("lead_time_days") or 3)
             # 1. Reorder: cover below lead time + 2 days safety
             if vel > 0 and stock / vel < lead + 2:
@@ -66,10 +77,10 @@ def generate(actor: Principal, branch_id: int | None = None) -> list[dict]:
                                  "lead_time_days": lead, "window": "last 14 days of POS sales"},
                                 b["code"], {"type": "draft_requisition", "product_id": pid, "branch_id": b["id"],
                                             "quantity": str(suggest), "supplier_id": it["preferred_supplier"]},
-                                "medium" if history_days >= 14 else "low"))
+                                "medium" if history >= 14 else "low"))
             # 2. Slow-moving / dead stock (needs enough history to be meaningful)
-            if stock > 0 and history_days >= 30 and not s30.get((b["id"], pid)):
-                dead = history_days >= 60 and not s60.get((b["id"], pid))
+            if stock > 0 and history >= 30 and not sales.get("q30"):
+                dead = history >= 60 and not sales.get("q60")
                 value = common.money(stock * it["cost_price"])
                 out.append(_ins(f"{'dead' if dead else 'slow'}:{b['id']}:{pid}", "dead_stock" if dead else "slow_moving",
                                 "medium" if dead else "low",
@@ -79,11 +90,11 @@ def generate(actor: Principal, branch_id: int | None = None) -> list[dict]:
                                 b["code"], {"type": "review_pricing_or_transfer", "product_id": pid}))
             # 3. Branch imbalance -> transfer suggestion
             if vel > 0 and stock / vel < 5:
-                for other in all_br:
-                    if other["id"] == b["id"] or not actor.can_branch(other["id"]):
-                        continue  # H1: never reveal or suggest from branches outside scope
+                for other in visible:
+                    if other["id"] == b["id"]:
+                        continue
                     o_stock = on_hand.get((other["storage_location_id"], pid), ZERO)
-                    o_vel = s14.get((other["id"], pid), ZERO) / 14
+                    o_vel = quantities.get((other["id"], pid), {}).get("q14", ZERO) / 14
                     o_cover = (o_stock / o_vel) if o_vel else (Decimal(999) if o_stock > 0 else ZERO)
                     if o_cover > 30 and o_stock > vel * 7:
                         qty = (vel * 7).quantize(Decimal("1"))
@@ -183,11 +194,12 @@ def _executive(actor: Principal, b_ids: list[int]) -> list[dict]:
     if not actor.has("finance.view"):
         return []
     today = common.today()
+    scope_key = ",".join(str(branch_id) for branch_id in sorted(b_ids))
     this0, this1 = today - dt.timedelta(days=6), today
     last0, last1 = today - dt.timedelta(days=13), today - dt.timedelta(days=7)
     a, b = _week_metrics(b_ids, this0, this1), _week_metrics(b_ids, last0, last1)
     if not b["sales"]:
-        return [_ins("exec:none", "executive", "low", "Not enough data for a week-on-week comparison",
+        return [_ins(f"exec:{scope_key}:none", "executive", "low", "Not enough data for a week-on-week comparison",
                      "At least two full weeks of posted sales are needed.", {}, confidence="n/a")]
     ch = ((a["sales"] - b["sales"]) / b["sales"] * 100).quantize(Decimal("0.1"))
     gm_a = ((a["sales"] - a["cogs"]) / a["sales"] * 100).quantize(Decimal("0.1")) if a["sales"] else ZERO
@@ -198,7 +210,7 @@ def _executive(actor: Principal, b_ids: list[int]) -> list[dict]:
     text = (f"Net sales (ex-VAT) were UGX {a['sales']:,} over {this0:%d %b}–{this1:%d %b}, {direction} {abs(ch)}% on the previous 7 days "
             f"(UGX {b['sales']:,}). Gross margin moved from {gm_b}% to {gm_a}%. {refunds['n']} refund(s) worth UGX {refunds['v']:,} "
             "were processed in the current week.")
-    return [_ins(f"exec:{this1}", "executive", "low", "Week-on-week summary", text,
+    return [_ins(f"exec:{scope_key}:{this1}", "executive", "low", "Week-on-week summary", text,
                  {"net_sales_this_week": a["sales"], "net_sales_prev_week": b["sales"], "gross_margin_this": gm_a,
                   "gross_margin_prev": gm_b, "refunds": refunds["n"], "window": f"{last0} to {this1}",
                   "source": "posted ledger (revenue 4.*, COGS 5.1.1.01) + POS refunds"}, confidence="high")]

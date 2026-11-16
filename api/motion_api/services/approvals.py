@@ -315,8 +315,10 @@ def history(actor: Principal, *, action_type: str | None = None, status: str | N
         SELECT r.*, u.full_name AS initiator_name, b.name AS branch_name
         FROM motion.approval_request r JOIN motion.app_user u ON u.id=r.initiator_id JOIN motion_branch b ON b.id=r.branch_id
         WHERE (%s::text IS NULL OR r.action_type=%s) AND (%s::text IS NULL OR r.status=%s)
-        ORDER BY r.updated_at DESC LIMIT %s""", (action_type, action_type, status, status, limit))
-    return [_decorate(r) for r in rows if actor.can_branch(r["branch_id"])]
+          AND (%s OR r.branch_id=ANY(%s))
+        ORDER BY r.updated_at DESC, r.id DESC LIMIT %s""",
+        (action_type, action_type, status, status, actor.all_branches, sorted(actor.branch_ids), limit))
+    return [_decorate(r) for r in rows]
 
 
 def common_now():

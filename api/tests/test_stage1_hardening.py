@@ -5,13 +5,11 @@ import dataclasses
 
 import psycopg
 import pytest
-from fastapi.testclient import TestClient
-
 from conftest import TEST_URL, Api, app, new_key, on_hand, pid, q1
+from fastapi.testclient import TestClient
 from motion_api import security
 from motion_api.routes import core
 from motion_api.settings import get_settings
-
 
 # ---------------------------------------------------------------- C2: demo isolation
 

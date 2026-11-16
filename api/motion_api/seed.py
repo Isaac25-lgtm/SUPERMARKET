@@ -197,7 +197,7 @@ def seed_opening_stock() -> None:
         with t.set_context(motion_lost_found_account=equity.id, motion_branch=b["id"]):
             created = Move.create(moves)
             Move.do(created)
-        for it, m in zip(items, moves):
+        for it, m in zip(items, moves, strict=True):
             if life.get(it["name"]):
                 t.execute("""INSERT INTO motion.stock_batch (product_id, branch_id, lot_ref, expiry_date, received_qty,
                              received_at, source_type) VALUES (%s,%s,%s,%s,%s,%s,'opening')""",
@@ -225,8 +225,9 @@ def run(settings: Settings, activity: bool = True) -> None:
     t.configure(settings)
     # Only one seeder at a time: during a zero-downtime deploy the old and the new
     # container both start seeding; the second waits for the first to stop.
-    import psycopg
     import time as _time
+
+    import psycopg
 
     guard = psycopg.connect(settings.database.url, autocommit=True)
     deadline = _time.monotonic() + 1200

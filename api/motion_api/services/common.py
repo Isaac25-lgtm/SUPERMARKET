@@ -44,7 +44,7 @@ def company_id() -> int:
 
 
 def tryton_context(branch_id: int | None = None, **extra) -> dict:
-    ctx = {"company": company_id(), "language": "en", "_skip_warnings": True}
+    ctx = {"company": company_id(), "language": "en"}
     if branch_id:
         ctx["motion_branch"] = branch_id
     ctx.update(extra)
@@ -88,6 +88,19 @@ def register(register_id: int) -> dict:
 def next_ref(prefix: str, seq: str) -> str:
     n = t.sql_one(f"SELECT nextval('motion.{seq}') AS n")["n"]
     return f"{prefix}-{n:06d}"
+
+
+def lock_stock(location_id: int, product_ids: list[int]) -> None:
+    """Serialize inventory writers before they read availability in this location."""
+    for product_id in sorted(set(product_ids)):
+        t.execute("""INSERT INTO motion.stock_guard (location_id, product_id, version) VALUES (%s,%s,1)
+                     ON CONFLICT (location_id, product_id) DO UPDATE SET version = motion.stock_guard.version + 1""",
+                  (location_id, product_id))
+
+
+def lock_safe(branch_id: int) -> None:
+    t.execute("""INSERT INTO motion.safe_guard (branch_id) VALUES (%s)
+                 ON CONFLICT (branch_id) DO UPDATE SET version=motion.safe_guard.version+1""", (branch_id,))
 
 
 def stock_on_hand(location_ids: list[int], product_ids: list[int] | None = None) -> dict[tuple[int, int], Decimal]:

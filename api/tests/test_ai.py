@@ -10,7 +10,6 @@ import json
 
 import httpx
 import pytest
-
 from conftest import q1
 from motion_api.services import ai
 from motion_api.settings import get_settings

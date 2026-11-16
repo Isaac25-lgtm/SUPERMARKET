@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-
 from conftest import ROOT, q1
 from motion_api.permissions import markdown
 
