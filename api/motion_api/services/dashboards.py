@@ -128,11 +128,11 @@ def build(actor: Principal, *, role: str | None = None, branch_id: int | None = 
         data.update(cash=finance.cash_position(actor, branch_id),
                     payables=finance.payables_summary(actor, branch_id), approvals=_approval_counts(actor, branch_ids),
                     exceptions=_exceptions(actor, branch_ids),
-                    drafts=t.sql("""SELECT i.id, i.description, pa.name AS supplier, i.total_amount_cache AS total
+                    drafts=common.fill_invoice_totals(t.sql("""SELECT i.id, i.description, pa.name AS supplier, i.total_amount_cache AS total
                                     FROM account_invoice i JOIN party_party pa ON pa.id=i.party
                                     WHERE i.type='in' AND i.state='draft'
                                       AND (i.branch=ANY(%s) OR (i.branch IS NULL AND %s))
-                                    ORDER BY i.id DESC LIMIT 10""", (branch_ids, actor.all_branches and branch_id is None)),
+                                    ORDER BY i.id DESC LIMIT 10""", (branch_ids, actor.all_branches and branch_id is None))),
                     unverified=t.sql_one("""SELECT count(*) AS n, COALESCE(sum(total),0) AS v FROM motion.pos_sale
                                             WHERE unverified_claims AND sale_date >= %s AND branch_id=ANY(%s)""",
                                          (today - dt.timedelta(days=7), branch_ids)))

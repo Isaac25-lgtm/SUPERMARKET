@@ -243,10 +243,15 @@ def cash_position(actor: Principal, branch_id: int | None = None) -> dict:
 def payables_summary(actor: Principal, branch_id: int | None = None) -> dict:
     actor.require("finance.view")
     branches, unallocated = _scope(actor, branch_id)
-    rows = t.sql("""SELECT i.state, count(*) AS n, COALESCE(sum(i.total_amount_cache),0) AS total FROM account_invoice i
+    bills = common.fill_invoice_totals(t.sql("""SELECT i.id, i.state, i.total_amount_cache AS total FROM account_invoice i
                     WHERE i.type='in' AND i.state IN ('draft','validated','posted')
-                      AND (i.branch = ANY(%s) OR (i.branch IS NULL AND %s)) GROUP BY 1""",
-                 (branches, unallocated))
+                      AND (i.branch = ANY(%s) OR (i.branch IS NULL AND %s))""", (branches, unallocated)))
+    states: dict[str, dict] = {}
+    for b in bills:
+        s = states.setdefault(b["state"], {"state": b["state"], "n": 0, "total": ZERO})
+        s["n"] += 1
+        s["total"] += common.money(b["total"])
+    rows = list(states.values())
     open_bal = t.sql_one("""SELECT COALESCE(sum(l.credit - l.debit),0) AS open FROM account_move_line l JOIN account_account a ON a.id=l.account
                             JOIN account_move m ON m.id=l.move
                             WHERE a.code='2.1.1.01' AND l.reconciliation IS NULL AND m.state='posted'

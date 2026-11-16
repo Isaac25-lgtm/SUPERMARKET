@@ -90,6 +90,18 @@ def next_ref(prefix: str, seq: str) -> str:
     return f"{prefix}-{n:06d}"
 
 
+def fill_invoice_totals(rows: list[dict], key: str = "total") -> list[dict]:
+    """Tryton only caches an invoice total once it is posted: compute drafts and validated bills live."""
+    missing = [r["id"] for r in rows if r.get(key) is None]
+    if missing:
+        Invoice = t.model("account.invoice")
+        totals = {i.id: money(i.total_amount) for i in Invoice.browse(missing)}
+        for r in rows:
+            if r.get(key) is None:
+                r[key] = totals[r["id"]]
+    return rows
+
+
 def lock_stock(location_id: int, product_ids: list[int]) -> None:
     """Serialize inventory writers before they read availability in this location."""
     for product_id in sorted(set(product_ids)):

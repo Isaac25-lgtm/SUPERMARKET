@@ -152,6 +152,7 @@ def po_detail(actor: Principal, purchase_id: int) -> dict:
     po["invoices"] = t.sql("""SELECT DISTINCT i.id, i.number, i.state, i.total_amount_cache AS total, i.reference
                               FROM account_invoice i JOIN account_invoice_line il ON il.invoice=i.id
                               JOIN purchase_line pl ON il.origin='purchase.line,'||pl.id WHERE pl.purchase=%s""", (purchase_id,))
+    common.fill_invoice_totals(po["invoices"])
     req = t.sql_one("SELECT id, ref FROM motion.approval_request WHERE result_type='purchase.purchase' AND result_id=%s",
                     (str(purchase_id),))
     po["request"] = req
@@ -250,8 +251,9 @@ def payables(actor: Principal, *, state: str | None = None) -> list[dict]:
                     ORDER BY i.id DESC LIMIT 300""", (state, state, actor.all_branches, sorted(actor.branch_ids)))
     Invoice = t.model("account.invoice")
     outstanding = Invoice.get_amount_to_pay(Invoice.browse([r["id"] for r in rows if r["state"] == "posted"]), "amount_to_pay")
+    common.fill_invoice_totals(rows)
     for r in rows:
-        r["total"] = common.money(r["total"]) if r["total"] is not None else None
+        r["total"] = common.money(r["total"])
         r["open_amount"] = None if r["state"] in {"draft", "validated"} else outstanding.get(r["id"], Decimal(0))
     return rows
 
@@ -349,12 +351,26 @@ def post_invoice(actor: Principal, invoice_id: int, *, supplier_reference: str, 
             t.transaction().set_user(actor.tryton_user_id or 0):
         Invoice.write([inv], {"reference": reference, "invoice_date": invoice_date,
                               "accounting_date": invoice_date})
+        # H6: a matched bill carries the taxes of its approved PO lines, so Tryton's
+        # "not the product's default taxes" warning is acknowledged for this bill only
+        # (and audited below). Purchase VAT configuration is a Finance decision.
+        Line = t.model("account.invoice.line")
+        tax_differs = []
+        for ln in inv.line_lines:
+            probe = Line(ln.id)
+            probe.on_change_product()
+            if set(probe.taxes) != set(ln.taxes):
+                tax_differs.append(ln.product.rec_name if ln.product else ln.description)
+        if tax_differs:
+            Warning = t.model("res.user.warning")
+            Warning.skip(Warning.format("invoice_taxes", [inv]))
         Invoice.validate_invoice([inv])
         Invoice.post([inv])
         common.expect_state(inv, "posted", "paid", what="supplier invoice")
     record(actor=actor, action="invoice.post", target_type="invoice", target_id=inv.number,
            branch_id=inv.branch.id if inv.branch else None, amount=inv.total_amount,
-           after={"supplier": inv.party.rec_name, "reference": supplier_reference})
+           after={"supplier": inv.party.rec_name, "reference": supplier_reference,
+                  **({"taxes_follow_po_not_product_default": tax_differs} if tax_differs else {})})
     return invoice_detail(actor, invoice_id)
 
 

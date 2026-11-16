@@ -136,6 +136,26 @@ def test_full_procurement_to_payment(login, ids):
     assert acc.get(f"/api/finance/invoices/{invoice_id}").json()["state"] == "paid"
 
 
+def test_matched_bill_posts_when_product_has_default_input_vat(login, ids):
+    """Tryton warns when bill taxes differ from the product default (here: illustrative input VAT on
+    packaged groceries). A bill matched to its approved PO is posted with the PO's taxes, and the
+    acknowledgement is recorded in the audit trail (regression found in the final browser run)."""
+    inv, ops, acc = login("inv.ruth"), login("ops.david"), login("acc.amina")
+    sup = q1("SELECT id FROM party_party WHERE name LIKE 'Kampala Wholesale%%'")["id"]
+    flour = pid(ids, "Wheat flour")
+    req = inv.post("/api/procurement/requisitions", {"branch_id": ids["branch"]["NTH"], "supplier_id": sup, "justification": "Restock",
+                                                     "lines": [{"product_id": flour, "quantity": 5, "unit_cost": "7380"}]}).json()
+    _approve(login, req["id"], "ops.david", "acc.amina")
+    po = ops.post(f"/api/procurement/requisitions/{req['id']}/issue-po").json()
+    po = inv.post(f"/api/procurement/orders/{po['id']}/receive", {"lines": [{"line_id": po["lines"][0]["id"], "received_qty": 5}]}).json()
+    bill = po["invoices"][0]
+    assert D(bill["total"]) == D(36900)  # draft bills show their live total, not a missing cache
+    r = acc.post(f"/api/finance/invoices/{bill['id']}/post", {"supplier_reference": "KWF-VAT-1", "invoice_date": "2026-11-15"})
+    assert r.status_code == 200, r.text
+    ev = q1("SELECT after_state FROM motion.audit_event WHERE action='invoice.post' ORDER BY id DESC LIMIT 1")
+    assert ev["after_state"]["taxes_follow_po_not_product_default"]
+
+
 def test_rejection_and_return_need_reasons(login, ids):
     sup = q1("SELECT id FROM party_party WHERE name LIKE 'Pearl%%'")["id"]
     r = login("inv.ruth").post("/api/procurement/requisitions", {"branch_id": ids["branch"]["NTH"], "supplier_id": sup, "justification": "Need it",
