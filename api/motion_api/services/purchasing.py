@@ -285,8 +285,12 @@ def _invoice_matches(inv) -> dict[int, dict]:
                    and (inv.state in {"posted", "paid"} or billed + current <= all_received)
                    and line.product == po_line.product and line.unit == po_line.unit
                    and line.unit_price == po_line.unit_price and inv.party == po_line.purchase.party)
+        # VAT must be exactly what the approved order carries (no tax added, dropped or swapped).
+        tax_match = set(line.taxes) == set(po_line.taxes)
         matches[line.id] = {"ordered": po_line.quantity, "received": received,
-                            "po_unit_price": po_line.unit_price, "match": matched}
+                            "po_unit_price": po_line.unit_price, "match": matched and tax_match,
+                            "taxes": sorted(tx.rec_name for tx in line.taxes),
+                            "po_taxes": sorted(tx.rec_name for tx in po_line.taxes), "tax_match": tax_match}
     return matches
 
 
@@ -305,12 +309,16 @@ def invoice_detail(actor: Principal, invoice_id: int) -> dict:
             continue
         lines.append({"description": ln.description or (ln.product.rec_name if ln.product else ""), "quantity": ln.quantity,
                       "unit_price": ln.unit_price, "amount": ln.amount, "account": ln.account.rec_name if ln.account else None,
-                      **matched.get(ln.id, {"ordered": None, "received": None, "po_unit_price": None, "match": None})})
+                      **matched.get(ln.id, {"ordered": None, "received": None, "po_unit_price": None, "match": None,
+                                            "taxes": sorted(tx.rec_name for tx in ln.taxes), "po_taxes": None,
+                                            "tax_match": None})})
+    manual_taxes = [tx.description or (tx.tax.rec_name if tx.tax else "") for tx in inv.taxes if tx.manual]
     return {"id": inv.id, "number": inv.number, "state": inv.state, "supplier": inv.party.rec_name, "reference": inv.reference,
             "invoice_date": inv.invoice_date, "untaxed": inv.untaxed_amount, "tax": inv.tax_amount, "total": inv.total_amount,
             "amount_to_pay": inv.amount_to_pay if inv.state in {"posted", "paid"} else None,
             "branch": inv.branch.name if inv.branch else None, "lines": lines,
-            "three_way_match": bool(lines) and all(x["match"] is True for x in lines)}
+            "manual_taxes": manual_taxes,
+            "three_way_match": bool(lines) and all(x["match"] is True for x in lines) and not manual_taxes}
 
 
 def _claim_supplier_reference(inv, reference: str) -> None:
@@ -324,7 +332,8 @@ def _claim_supplier_reference(inv, reference: str) -> None:
         raise Conflict("This supplier invoice number has already been posted.")
 
 
-def post_invoice(actor: Principal, invoice_id: int, *, supplier_reference: str, invoice_date: dt.date) -> dict:
+def post_invoice(actor: Principal, invoice_id: int, *, supplier_reference: str, invoice_date: dt.date,
+                 supplier_total: Decimal) -> dict:
     actor.require("invoice.post", action="invoice.post")
     Invoice = t.model("account.invoice")
     inv = Invoice(invoice_id)
@@ -345,15 +354,23 @@ def post_invoice(actor: Principal, invoice_id: int, *, supplier_reference: str, 
                   (purchase_id,))
     detail = invoice_detail(actor, invoice_id)
     if not detail["three_way_match"]:
+        if detail["manual_taxes"] or any(x["tax_match"] is False for x in detail["lines"]):
+            raise Conflict("The bill's VAT does not match the approved purchase order. Correct the taxes before posting.")
         raise Conflict("Invoice does not match the order/receipt (quantity or price). Correct it before posting.")
+    # The amount owed must agree with the supplier's own document, VAT included.
+    if common.money(supplier_total) != common.money(detail["total"]):
+        raise Conflict(f"The total on the supplier's invoice (UGX {common.money(supplier_total):,.0f}) does not match this bill "
+                       f"(UGX {common.money(detail['total']):,.0f}, VAT included). Check the VAT and amounts with the supplier "
+                       "before posting.")
     _claim_supplier_reference(inv, reference)
     with t.set_context(**common.tryton_context(inv.branch.id if inv.branch else None)), \
             t.transaction().set_user(actor.tryton_user_id or 0):
         Invoice.write([inv], {"reference": reference, "invoice_date": invoice_date,
                               "accounting_date": invoice_date})
-        # H6: a matched bill carries the taxes of its approved PO lines, so Tryton's
-        # "not the product's default taxes" warning is acknowledged for this bill only
-        # (and audited below). Purchase VAT configuration is a Finance decision.
+        # H6: the checks above prove every line carries exactly its approved PO line's taxes and the
+        # total equals the supplier's document, so Tryton's "not the product's default taxes"
+        # warning is acknowledged for this bill only (and audited below). Purchase VAT
+        # configuration itself is a Finance decision.
         Line = t.model("account.invoice.line")
         tax_differs = []
         for ln in inv.line_lines:
@@ -370,6 +387,7 @@ def post_invoice(actor: Principal, invoice_id: int, *, supplier_reference: str, 
     record(actor=actor, action="invoice.post", target_type="invoice", target_id=inv.number,
            branch_id=inv.branch.id if inv.branch else None, amount=inv.total_amount,
            after={"supplier": inv.party.rec_name, "reference": supplier_reference,
+                  "supplier_total": str(common.money(supplier_total)),
                   **({"taxes_follow_po_not_product_default": tax_differs} if tax_differs else {})})
     return invoice_detail(actor, invoice_id)
 

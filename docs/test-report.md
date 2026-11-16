@@ -9,7 +9,7 @@ Command:
 ```bash
 MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest -q
 ```
-Latest result (16 Nov 2026, final round + Roles & permissions): **114 passed, 0 failed, 0 skipped** (~145 s, plus ~3 min the first time while the fixture template
+Latest result (16 Nov 2026, after the second review): **116 passed, 0 failed, 0 skipped** (~145 s, plus ~3 min the first time while the fixture template
 builds).
 
 | File | Scope |
@@ -17,7 +17,7 @@ builds).
 | `test_auth_security.py` | login, audited failures, lockout, CSRF, temporary passwords, suspension ending sessions, audit/approval immutability (DB), headers, token hashing |
 | `test_rbac.py` | role denials (parametrised), cross-branch denials, new cashier branch isolation, no self-escalation, owner-only grant, permission doc in sync, access change revokes sessions |
 | `test_pos.py` | exact VAT/COGS ledger effects, idempotency, scale labels, fractional-unit rejection, oversell, **two-thread last-unit race**, override single-use, refund approval and duplicate protection, variance → over/short, unverified mobile money |
-| `test_workflows.py` | 100 → 95 transfer conservation + write-off to shrinkage, approval bands & ordering, distinct approvers, full procurement → payment, reject/return/resubmit, accrual expense, default-deny policy |
+| `test_workflows.py` | 100 → 95 transfer conservation + write-off to shrinkage, approval bands & ordering, distinct approvers, full procurement → payment (wrong supplier total refused), bill VAT must match the PO, payables summary totals, reject/return/resubmit, accrual expense, default-deny policy |
 | `test_finance.py` | trial balance, branch ⇄ consolidated reconciliation, independent SQL check, profit definitions, break-even formula, capital recovery honesty, branch-scoped P&L, audited exports, role-specific dashboards, insight evidence |
 | `test_open_demo.py` | open demo off by default (404), role-limited audited demo sessions, pending accounts excluded, cannot enable without TEST DATA mode |
 | `test_ai.py` | Ask Motion AI with a mocked provider: tool loop + logging + audit, branch-scope and permission denials inside tools, unknown tools/bad arguments contained, data minimisation (no per-cashier/cost data sent), provider failure → rule-based fallback, hourly limit, cashier denied, bounded history, role-filtered tools, role-aware suggestions, section links limited to pages the user can open |
@@ -44,7 +44,7 @@ Trial balance balanced; 0 unbalanced entries; 0 entries without a branch; branch
 days and FYTD; 0 journal entries from internal transfers; 0 negative stock lines.
 
 ## Browser E2E (Playwright, Chromium, local server on seeded dev DB)
-Command: `cd web && E2E_CREDS=<creds.json> npx playwright test -c e2e/playwright.config.ts`. Result: **17 passed**:
+Command: `cd web && E2E_CREDS=<creds.json> npx playwright test -c e2e/playwright.config.ts`. Result: **19 passed**:
 - the six role dashboards render live data with no page errors (screenshots taken at desktop size, plus mobile
   for the Head Manager and Branch Manager);
 - every navigation route renders for the Head Manager;
@@ -55,6 +55,8 @@ Command: `cd web && E2E_CREDS=<creds.json> npx playwright test -c e2e/playwright
 - an accountant downloads an audited CSV report (POST export);
 - My access on the till: the cashier sees their role, branch, permissions and "does not approve"; sections collapse and expand, and the panel closes;
 - Roles & permissions: a cashier sees all eight roles (own role open and marked, others collapsed), opens the Head Manager card, sees no staff names, switches to Compare roles and back to My access; the Head Manager sees who holds each role;
+- weighed refund: 0.300 kg sold and 0.100 kg refunded accepts exactly 0.2 and refuses 0.201;
+- a page whose file cannot load (blocked twice) shows "This page could not be loaded" with Try again, which recovers once the file is reachable;
 - phone size (390 × 844, `mobile.spec.ts`): the till, My access, the Compare roles table (scrolls inside its box), the manager dashboard and the Ask Motion AI chat fit without horizontal scrolling.
 
 Screenshot review found grey charts (chart colour tokens weren't emitted by Tailwind). Fixed with `@theme static`.

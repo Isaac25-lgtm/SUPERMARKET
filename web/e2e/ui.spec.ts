@@ -195,3 +195,40 @@ test('Head Manager sees who holds each role', async ({ page }) => {
   await roles.getByRole('button', { name: /^Cashier/ }).click()
   await expect(roles.getByText('People with this role').first()).toBeVisible()
 })
+
+test('weighed refund accepts exactly the remaining quantity (0.300 sold, 0.100 refunded)', async ({ page }) => {
+  await login(page, 'cash.cen1')
+  await page.goto('/pos')
+  const openShift = page.getByRole('button', { name: 'Open shift' })
+  const scanner = page.getByLabel('Scan barcode or search products')
+  await expect(openShift.or(scanner)).toBeVisible()
+  if (await openShift.isVisible()) await openShift.click()
+  await expect(scanner).toBeVisible()
+  // The receipt lookup is stubbed so the quantities are exact: 0.3 - 0.1 is 0.19999… in floating point.
+  await page.route('**/api/pos/receipts/**', (route) => route.fulfill({ json: {
+    id: 999999, number: 'CEN-T1-999999', posted_at: new Date().toISOString(), total: '2400',
+    lines: [{ id: 1, name: 'Tomatoes loose (TEST)', quantity: '0.300', refunded_qty: '0.100', uom: 'kg', unit_price: '8000' }],
+  } }))
+  await page.getByRole('tab', { name: 'Refunds' }).click()
+  await page.getByLabel('Receipt number').fill('CEN-T1-999999')
+  await page.getByRole('button', { name: 'Find' }).click()
+  const box = page.getByLabel('Refund quantity for Tomatoes loose (TEST)')
+  await box.fill('0.2')
+  await expect(box).toHaveValue('0.2')
+  await box.fill('0.201') // more than remains: refused, previous entry kept
+  await expect(box).toHaveValue('0.2')
+})
+
+test('a page that cannot load shows a retry instead of a blank screen', async ({ page }) => {
+  await login(page, 'acc.amina')
+  await page.route(/\/assets\/Reports-[^/]+\.js$/, (route) => route.abort())
+  await page.goto('/reports')
+  // the first failure reloads once automatically; the second shows the error screen
+  const alert = page.getByRole('alert')
+  await expect(alert.getByText('This page could not be loaded')).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible() // navigation still usable
+  await page.screenshot({ path: `${shots}/page-load-error.png` })
+  await page.unroute(/\/assets\/Reports-[^/]+\.js$/)
+  await alert.getByRole('button', { name: 'Try again' }).click()
+  await expect(page.getByRole('heading', { name: 'Reports' })).toBeVisible()
+})

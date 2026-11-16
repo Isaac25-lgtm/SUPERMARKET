@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ComponentType, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { primaryRole, useAuth } from '../auth/auth'
+import { PageErrorBoundary } from '../components/PageErrorBoundary'
 import { LoadingBlock } from '../components/ui'
 import { AppShell } from '../layouts/AppShell'
 import { LoginPage } from '../pages/Login'
@@ -78,7 +79,13 @@ function Home() {
   return <Navigate to="/dashboard" replace />
 }
 
-const page = (el: ReactNode) => <Suspense fallback={<LoadingBlock rows={6} />}>{el}</Suspense>
+// Each page renders inside its own error boundary (reset on navigation), so a page that cannot
+// load or crashes shows a retry instead of an empty screen.
+function Page({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation()
+  return <PageErrorBoundary key={pathname}><Suspense fallback={<LoadingBlock rows={6} />}>{children}</Suspense></PageErrorBoundary>
+}
+const page = (el: ReactNode) => <Page>{el}</Page>
 
 export function App() {
   return (

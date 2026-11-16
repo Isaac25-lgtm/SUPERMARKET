@@ -65,7 +65,8 @@ def procurement_scenarios() -> None:
     po = purchasing.receive_goods(inv, po["id"], lines=[{"line_id": ln["id"], "received_qty": ln["quantity"]} for ln in po["lines"]],
                                   note="Delivered complete (TEST)")
     inv_id = po["invoices"][0]["id"]
-    purchasing.post_invoice(acc, inv_id, supplier_reference="LBD-INV-4471", invoice_date=today)
+    purchasing.post_invoice(acc, inv_id, supplier_reference="LBD-INV-4471", invoice_date=today,
+                            supplier_total=purchasing.invoice_detail(acc, inv_id)["total"])
     detail = purchasing.invoice_detail(acc, inv_id)
     pay = purchasing.request_payment(acc, inv_id, amount=detail["amount_to_pay"], reason="Due on delivery (TEST)")
     _approve_all(pay, "gm.grace")
@@ -84,7 +85,9 @@ def procurement_scenarios() -> None:
         lines.append({"line_id": ln["id"], "received_qty": q, "lot_ref": f"KWF-{ln['id']}"})
     po = purchasing.receive_goods(inv, po["id"], lines=lines, note="Supplier short-delivered 5kg rice; balance promised (TEST)")
     if po["invoices"]:
-        purchasing.post_invoice(acc, po["invoices"][0]["id"], supplier_reference="KWF-88123", invoice_date=today)
+        bill_id = po["invoices"][0]["id"]
+        purchasing.post_invoice(acc, bill_id, supplier_reference="KWF-88123", invoice_date=today,
+                                supplier_total=purchasing.invoice_detail(acc, bill_id)["total"])
     # (c) high-value requisition awaiting CFO
     c = purchasing.submit_requisition(inv, branch_id=_bid("CEN"), supplier_id=_supplier("Kampala Wholesale"),
                                       lines=[{"product_id": _pid("Cooking oil 3L"), "quantity": 120},

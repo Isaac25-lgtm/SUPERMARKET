@@ -226,6 +226,7 @@ class GoodsIn(BaseModel):
 class PostInvoiceIn(BaseModel):
     supplier_reference: str = Field(min_length=1, max_length=60)
     invoice_date: dt.date
+    supplier_total: Decimal = Field(gt=0, description="Total (VAT included) printed on the supplier's invoice")
 
 
 class PaymentRequestIn(BaseModel):
@@ -311,7 +312,8 @@ def invoice(invoice_id: int, request: Request):
 @router.post("/finance/invoices/{invoice_id}/post")
 def post_invoice(invoice_id: int, body: PostInvoiceIn, request: Request):
     return MotionJSON(unit_of_work(request, lambda p: purchasing.post_invoice(
-        p, invoice_id, supplier_reference=body.supplier_reference, invoice_date=body.invoice_date)))
+        p, invoice_id, supplier_reference=body.supplier_reference, invoice_date=body.invoice_date,
+        supplier_total=body.supplier_total)))
 
 
 @router.post("/finance/invoices/{invoice_id}/payment-request")

@@ -75,6 +75,14 @@ the matrix exactly, that names are withheld from cashiers and branch managers, a
 **Clearer borders.** The shared border colours were darkened (light and dark themes) and card shadows strengthened, so
 cards, tables, inputs and panels have a visible edge on bright screens.
 
+## Second code review (after fd9f09c) — fixed
+| Finding | Fix |
+|---|---|
+| **High.** A matched supplier bill acknowledged Tryton's tax warning without checking its taxes against the approved PO or the supplier's document, so wrong VAT could post. | The 3-way match now also requires each bill line's taxes to equal its PO line's taxes, and any manual tax line on the bill blocks posting. Posting requires the **total printed on the supplier's invoice** (VAT included), which must equal the bill total. The tax warning is acknowledged only after both checks pass; the supplier total is audited. The bill page shows a VAT column (mismatches in red) and the new field. Tests: `test_bill_with_vat_not_on_the_approved_order_cannot_post`, wrong supplier total refused in `test_full_procurement_to_payment`. |
+| **Medium.** Weighed refunds: 0.300 sold, 0.100 refunded showed 0.200 refundable but rejected 0.2 (floating-point subtraction). | Refund quantities are compared and sent in whole thousandths. E2E: "weighed refund accepts exactly the remaining quantity". |
+| **Medium.** A page file that stays unavailable after the automatic reload left a blank screen. | Each page renders inside an error boundary (reset on navigation) with **Try again** (reload) and **Go to start**; the sidebar stays usable. E2E: "a page that cannot load shows a retry". |
+| **Performance note.** Payables summary moved aggregation of every open bill into Python. | Cached totals are summed in SQL again (grouped by state); only bills without a cached total (drafts and validated bills, normally a short queue) are computed live. Test: `test_payables_summary_counts_cached_and_live_totals`. Still to do: measure the accountant dashboard on staging with realistic invoice volume. |
+
 ## Still open (decisions and operations, not code)
 - **Finance:**
   - refund-to-tender policy;
@@ -88,6 +96,7 @@ cards, tables, inputs and panels have a visible edge on bright screens.
 - **Operations:**
   - rotate the Neon, Render and DeepSeek keys;
   - run a staging restore with migration 0007;
+  - time the accountant dashboard (payables summary) on staging with realistic bill volume;
   - load test with 10 users;
   - verify TLS and ACLs on real branch hardware.
 - **Cleanup (L1/L2):**

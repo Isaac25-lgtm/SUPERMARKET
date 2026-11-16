@@ -405,6 +405,10 @@ export function ReceiptModal({ receipt, onClose }: { receipt: Record<string, unk
   )
 }
 
+// Quantities are compared in whole thousandths (the till's precision), never as floats:
+// 0.300 - 0.100 must leave exactly 0.200 refundable.
+const milli = (v: string | number | null | undefined) => Math.round(num(v) * 1000)
+
 function Refunds({ shift }: { shift: Shift }) {
   const qc = useQueryClient()
   const toast = useToast()
@@ -421,7 +425,7 @@ function Refunds({ shift }: { shift: Shift }) {
     try { setSale(await api.get(`/api/pos/receipts/${encodeURIComponent(number.trim())}`)) } catch (err) { setFindErr(err) }
   }
   const request = useMutation({
-    mutationFn: () => api.post('/api/pos/refunds/requests', { sale_id: sale!.id, reason, lines: Object.entries(pick).map(([line_id, q]) => ({ line_id: Number(line_id), quantity: num(q) })).filter((x) => x.quantity > 0) }),
+    mutationFn: () => api.post('/api/pos/refunds/requests', { sale_id: sale!.id, reason, lines: Object.entries(pick).filter(([, q]) => milli(q) > 0).map(([line_id, q]) => ({ line_id: Number(line_id), quantity: (milli(q) / 1000).toFixed(3) })) }),
     onSuccess: () => { toast('good', 'Refund request sent to the branch manager.'); setSale(null); setReason(''); setNumber(''); qc.invalidateQueries({ queryKey: ['my-refunds'] }) },
   })
   const execute = useMutation({
@@ -444,19 +448,20 @@ function Refunds({ shift }: { shift: Shift }) {
               <div className="text-[13px] text-muted">{sale.number} · {dateTime(sale.posted_at)} · {money(sale.total)}</div>
               <ul className="divide-y divide-line rounded-lg border border-line">
                 {(sale.lines as Record<string, string>[]).map((l) => {
-                  const left = num(l.quantity) - num(l.refunded_qty)
+                  const leftM = milli(l.quantity) - milli(l.refunded_qty)
+                  const left = leftM / 1000
                   return (
                     <li key={l.id} className="flex items-center justify-between gap-3 px-3 py-2 text-[13px]">
                       <div><div className="font-medium">{l.name}</div><div className="text-muted">{qty(l.quantity, l.uom)} sold · {qty(left, l.uom)} refundable · {money(l.unit_price)}</div></div>
-                      <input aria-label={`Refund quantity for ${l.name}`} inputMode="decimal" disabled={left <= 0} value={pick[Number(l.id)] ?? ''} placeholder="0"
-                        onChange={(e) => { const v = e.target.value.trim(); if (/^\d*\.?\d{0,3}$/.test(v) && (v === '' || num(v) <= left)) setPick((p) => ({ ...p, [Number(l.id)]: v })) }} className="h-9 w-20 rounded-lg border border-line px-2 text-right" />
+                      <input aria-label={`Refund quantity for ${l.name}`} inputMode="decimal" disabled={leftM <= 0} value={pick[Number(l.id)] ?? ''} placeholder="0"
+                        onChange={(e) => { const v = e.target.value.trim(); if (/^\d*\.?\d{0,3}$/.test(v) && (v === '' || milli(v) <= leftM)) setPick((p) => ({ ...p, [Number(l.id)]: v })) }} className="h-9 w-20 rounded-lg border border-line px-2 text-right" />
                     </li>
                   )
                 })}
               </ul>
               <Field label="Reason" htmlFor="rr"><Textarea id="rr" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="What is wrong with the goods?" /></Field>
               <ErrorBox error={request.error} />
-              <Button variant="primary" loading={request.isPending} disabled={reason.trim().length < 5 || !Object.values(pick).some((q) => num(q) > 0)} onClick={() => request.mutate()}>Send for approval</Button>
+              <Button variant="primary" loading={request.isPending} disabled={reason.trim().length < 5 || !Object.values(pick).some((q) => milli(q) > 0)} onClick={() => request.mutate()}>Send for approval</Button>
             </>
           )}
         </div>

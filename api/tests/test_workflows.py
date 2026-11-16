@@ -127,7 +127,12 @@ def test_full_procurement_to_payment(login, ids):
     detail = acc.get(f"/api/finance/invoices/{invoice_id}").json()
     assert detail["three_way_match"] is True and D(detail["lines"][0]["quantity"]) == 30
     payable0 = account_balance("2.1.1.01")
-    assert acc.post(f"/api/finance/invoices/{invoice_id}/post", {"supplier_reference": "KWF-T1", "invoice_date": "2026-11-15"}).status_code == 200
+    post = {"supplier_reference": "KWF-T1", "invoice_date": "2026-11-15"}
+    # the total typed from the supplier's own invoice must agree with the bill (VAT included)
+    wrong = acc.post(f"/api/finance/invoices/{invoice_id}/post", {**post, "supplier_total": "111001"})
+    assert wrong.status_code == 409 and "supplier's invoice" in wrong.json()["message"]
+    assert acc.get(f"/api/finance/invoices/{invoice_id}").json()["state"] == "draft"
+    assert acc.post(f"/api/finance/invoices/{invoice_id}/post", {**post, "supplier_total": "111000"}).status_code == 200
     assert payable0 - account_balance("2.1.1.01") == D(111000)  # liability recognised: 30 x 3,700
     # Payment is a separate approval; requester cannot approve it.
     pay = acc.post(f"/api/finance/invoices/{invoice_id}/payment-request", {"amount": "111000", "reason": "Due"}).json()
@@ -154,10 +159,49 @@ def test_matched_bill_posts_when_product_has_default_input_vat(login, ids):
     po = inv.post(f"/api/procurement/orders/{po['id']}/receive", {"lines": [{"line_id": po["lines"][0]["id"], "received_qty": 5}]}).json()
     bill = po["invoices"][0]
     assert D(bill["total"]) == D(36900)  # draft bills show their live total, not a missing cache
-    r = acc.post(f"/api/finance/invoices/{bill['id']}/post", {"supplier_reference": "KWF-VAT-1", "invoice_date": "2026-11-15"})
+    r = acc.post(f"/api/finance/invoices/{bill['id']}/post", {"supplier_reference": "KWF-VAT-1", "invoice_date": "2026-11-15",
+                                                            "supplier_total": "36900"})
     assert r.status_code == 200, r.text
     ev = q1("SELECT after_state FROM motion.audit_event WHERE action='invoice.post' ORDER BY id DESC LIMIT 1")
     assert ev["after_state"]["taxes_follow_po_not_product_default"]
+
+
+def test_bill_with_vat_not_on_the_approved_order_cannot_post(login, ids):
+    """A tax added to a draft bill line (not on the approved PO line) blocks posting, even when the
+    supplier total typed in agrees with the inflated bill."""
+    from motion_api import tryton as t
+
+    inv, ops, acc = login("inv.ruth"), login("ops.david"), login("acc.amina")
+    sup = q1("SELECT id FROM party_party WHERE name LIKE 'Kampala Wholesale%%'")["id"]
+    req = inv.post("/api/procurement/requisitions", {"branch_id": ids["branch"]["NTH"], "supplier_id": sup, "justification": "Restock",
+                                                     "lines": [{"product_id": pid(ids, "Sugar - brown"), "quantity": 4, "unit_cost": "3700"}]}).json()
+    _approve(login, req["id"], "ops.david", "acc.amina")
+    po = ops.post(f"/api/procurement/requisitions/{req['id']}/issue-po").json()
+    po = inv.post(f"/api/procurement/orders/{po['id']}/receive", {"lines": [{"line_id": po["lines"][0]["id"], "received_qty": 4}]}).json()
+    bill_id = po["invoices"][0]["id"]
+    assert acc.get(f"/api/finance/invoices/{bill_id}").json()["three_way_match"] is True
+    line = q1("SELECT id FROM account_invoice_line WHERE invoice=%s AND type='line'", (bill_id,))
+    po_taxes = {r["tax"] for r in q("""SELECT pt.tax FROM "purchase_line-account_tax" pt JOIN account_invoice_line il
+                                       ON il.origin = 'purchase.line,' || pt.line WHERE il.id=%s""", (line["id"],))}
+    extra = q1("SELECT id FROM account_tax WHERE parent IS NULL AND NOT (id = ANY(%s)) ORDER BY id LIMIT 1", (sorted(po_taxes),))
+    t.run(lambda: t.execute('INSERT INTO "account_invoice_line-account_tax" (line, tax) VALUES (%s,%s)', (line["id"], extra["id"])))
+    detail = acc.get(f"/api/finance/invoices/{bill_id}").json()
+    assert detail["three_way_match"] is False and detail["lines"][0]["tax_match"] is False
+    r = acc.post(f"/api/finance/invoices/{bill_id}/post", {"supplier_reference": "KWF-TAX-X", "invoice_date": "2026-11-15",
+                                                          "supplier_total": str(detail["total"])})
+    assert r.status_code == 409 and "VAT" in r.json()["message"]
+    assert acc.get(f"/api/finance/invoices/{bill_id}").json()["state"] == "draft"
+
+
+def test_payables_summary_counts_cached_and_live_totals(login, ids):
+    acc = login("acc.amina")
+    summary = {r["state"]: r for r in acc.get("/api/dashboard").json()["payables"]["by_state"]}
+    bills = acc.get("/api/finance/payables").json()["invoices"]
+    for state in ("draft", "posted"):
+        mine = [b for b in bills if b["state"] == state]
+        if mine and len(bills) < 300:
+            assert summary[state]["n"] == len(mine)
+            assert D(summary[state]["total"]) == sum(D(b["total"]) for b in mine)
 
 
 def test_rejection_and_return_need_reasons(login, ids):
