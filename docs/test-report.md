@@ -9,7 +9,7 @@ Command:
 ```bash
 MOTION_ENV_FILE=.env.dev PYTHONPATH=api .venv/Scripts/python -m pytest -q
 ```
-Latest result (16 Nov 2026, final round): **111 passed, 0 failed, 0 skipped** (~145 s, plus ~3 min the first time while the fixture template
+Latest result (16 Nov 2026, final round): **112 passed, 0 failed, 0 skipped** (~145 s, plus ~3 min the first time while the fixture template
 builds).
 
 | File | Scope |
@@ -44,7 +44,7 @@ Trial balance balanced; 0 unbalanced entries; 0 entries without a branch; branch
 days and FYTD; 0 journal entries from internal transfers; 0 negative stock lines.
 
 ## Browser E2E (Playwright, Chromium, local server on seeded dev DB)
-Command: `cd web && E2E_CREDS=<creds.json> npx playwright test -c e2e/playwright.config.ts`. Result: **13 passed**:
+Command: `cd web && E2E_CREDS=<creds.json> npx playwright test -c e2e/playwright.config.ts`. Result: **15 passed**:
 - the six role dashboards render live data with no page errors (screenshots taken at desktop size, plus mobile
   for the Head Manager and Branch Manager);
 - every navigation route renders for the Head Manager;
@@ -53,9 +53,38 @@ Command: `cd web && E2E_CREDS=<creds.json> npx playwright test -c e2e/playwright
 - the company logo returns to the dashboard, and sign-out lands on the sign-in page;
 - Ask Motion AI: the floating button opens the chat on any page, a question gets an answer, Escape closes it, and the Alerts & insights page renders;
 - an accountant downloads an audited CSV report (POST export);
-- My access on the till: the cashier sees their role, branch, permissions and "does not approve"; sections collapse and expand, and the panel closes.
+- My access on the till: the cashier sees their role, branch, permissions and "does not approve"; sections collapse and expand, and the panel closes;
+- phone size (390 × 844, `mobile.spec.ts`): the till, My access, the manager dashboard and the Ask Motion AI chat fit without horizontal scrolling.
 
 Screenshot review found grey charts (chart colour tokens weren't emitted by Tailwind). Fixed with `@theme static`.
+
+## Final live browser round (16 Nov 2026, Claude in Chrome, https://motion-supermarket.onrender.com)
+Every step ran in the real browser against the deployed TEST site, as the demo account for that role.
+
+| Area | What was done live | Result |
+| --- | --- | --- |
+| Sign-in and idle | Demo picker grouped by role. A tab left idle for over 5 minutes | Picker correct. The idle tab redirected to `/login?reason=idle` |
+| Permissions | Every demo account requested every screen's API. A permission matrix was compiled | Only 200/403, never 5xx. Each role sees exactly its matrix (GM: no ledger; Ops/Inventory: no finance; branch managers: own branch only; cashier: till only). `sys.admin` is not offered in the open demo, by design |
+| My access | Opened from the account menu (Head Manager, cashier on the till) | Roles, branches, approval authority and permissions by area. Collapse and expand both work |
+| Ask Motion AI (DeepSeek) | Head Manager margin by branch; Inventory Manager asked for profit; CEN branch manager asked about North; cashier | Per-branch P&L tools and an "Open Profit & cash" link. Profit politely withheld. North refused (out of scope). Cashier 403. Every question audited |
+| Till | Weighed and unit items, cash with change, refund request, second open refund on the same receipt, manager approval, cash pay-out, blind close, manager reconcile | Receipt NTH-T1-000196 (VAT 1,373). Duplicate refund refused. Refund NTH-T1-000197 −4,500 with the original VAT (−686). Blind close, variance −32,000 reconciled |
+| Procurement and payables | Final approval PR-000010, PO issued to the approved supplier, partial receipt (100 of 120), duplicate supplier ref (case-insensitive), bill posted, partial payment (self-approval refused), balance received | PO 6 matched. Duplicate refused. SINV2026-00021 posted. Open balance 1,482,800 from Tryton. Second draft bill shows 408,000 |
+| Transfers | Request, approve, dispatch, receive with explicit counts (Confirm disabled until all counted), dispatcher tried to receive, late arrival, write-off, closed | TRF-000005 closed. Shortage resolved as found; damage written off via WO-000051 |
+| Barcodes | Bad check digit, valid EAN-13 registered, scanned at the till | Bad digit refused (client and server). Scan added the product |
+| Exports | Finance P&L export | POST 200 with a CSV |
+| Audit | Searched invoice.post, pos.refund and ai.ask | Events present, including the acknowledged tax warning |
+
+**Defects found live and fixed in this round:**
+1. A supplier bill for packaged groceries could not be posted, because Tryton's default-tax warning was restored.
+2. Draft bills showed UGX 0.
+3. A refund quantity of 0.5 kg and a 12.5% discount could not be typed.
+4. The refund approval showed "Line 3503" instead of the product name.
+5. After a deploy, an open tab showed a blank page.
+6. The receiving branch could not see or resolve its transfer discrepancies.
+7. The dispatcher saw a receive form they were not allowed to use.
+8. CSV exports on the Finance, Shifts and Stock pages used GET links, which the new POST-only endpoints rejected (found in code review).
+
+Each fix is deployed and was re-verified live.
 
 ## Not yet executed
 - Load test for 10 users / 4 cashiers on Render. Locally, a concurrent two-cashier race is tested. Throughput on

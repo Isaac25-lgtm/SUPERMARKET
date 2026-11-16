@@ -50,6 +50,16 @@ what is listed under "review fixes", and re-ran the suites.
 - The TEST demo service keeps `MOTION_AUTO_BOOTSTRAP=1` and its demo switches on Render. `render.yaml` stays the client-safe
   template, where bootstrap is a separate migration job.
 
+**Fixes from the final live browser round** (see `docs/test-report.md`):
+- H6 follow-up: posting a 3-way-matched bill acknowledges only Tryton's `invoice_taxes` warning for that bill (taxes
+  follow the approved PO), and the audit records which lines. Regression test included.
+- Draft and validated bills show live totals instead of an empty cache.
+- Transfer discrepancies are visible to the receiving branch, which records late arrivals. The dispatcher sees a
+  notice instead of the receive form.
+- Till inputs accept decimals (refund kg, discount %). Refund approvals name the products.
+- After a deploy, the web app reloads once if a page chunk from the previous build is gone, instead of
+  showing a blank page.
+
 **New feature: My access.** Every account opens **My access** from the account menu (also on the till). It shows the
 account's roles, branches, approval authority and all permissions grouped by area, with collapsible sections. The
 data comes from `GET /api/auth/access`, built from `permissions.py`. Tests: `test_my_access.py` and the E2E spec "My access …".

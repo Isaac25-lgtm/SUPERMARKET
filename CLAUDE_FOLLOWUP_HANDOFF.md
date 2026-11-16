@@ -1,5 +1,10 @@
 # Motion Retail production follow-up
 
+> **Status (16 Nov 2026, Claude):** these changes were reviewed, completed, deployed to the TEST site and verified in a
+> final live browser round. Defects found in review and live testing were fixed and deployed. See
+> [docs/audit-response.md](docs/audit-response.md) and [docs/test-report.md](docs/test-report.md). The operational and
+> Finance items under "Remaining engineering and operational work" are still open.
+
 16 November 2026 · Workspace changes based on `main` at `a22e139`. The preceding audit and its finding IDs are in [CLAUDE_PRODUCTION_HANDOFF.md](CLAUDE_PRODUCTION_HANDOFF.md). Use this file for the current status and remaining work.
 
 ## Changes implemented
