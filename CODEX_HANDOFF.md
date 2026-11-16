@@ -47,7 +47,7 @@ only, all pre-existing).
 | `fd9f09c` | UI | Clearer borders: darker `--color-line*` tokens; outer containers use `border-line-strong`. |
 | `43ee261` | Review fixes | (1) **Bill VAT**: 3-way match also requires each line's taxes == PO line taxes and no manual tax lines; posting requires `supplier_total` (VAT incl.) == bill total; tax warning acknowledged only after that. (2) Weighed refunds compared in thousandths. (3) `PageErrorBoundary` around every page (Try again / Go to start). (4) Payables summary sums cached totals in SQL, computes only uncached drafts live. |
 | `1e56fc5` | UI | Role icons (`components/RoleIcon.tsx`, `--color-role-*` tokens, `.role-tile`) on the picker, My access, Roles cards, account chip. |
-| `ba5bfd2` | UI | Natural backdrop on sign-in and the demo account picker (`.nature-backdrop`, `components/NatureLeaves.tsx`). |
+| `ba5bfd2` + next | UI | Sign-in and demo account picker backdrop: supermarket line art (baskets, carts, produce, bakery, barcodes) in the margins over a teal/cream wash (`.store-backdrop`, `components/StoreBackdrop.tsx`); replaced the first leaf design at the owner's request. |
 | (this commit) | **Offline** | **Branch box**: see below. |
 
 ## The branch box (offline selling): design you should know before changing it
